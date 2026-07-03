@@ -1,0 +1,26 @@
+{
+  "credits": 85,
+  "appCreationsCount": 1,
+  "deploymentsCount": 0,
+  "referralCode": "SRI777",
+  "referrals": [
+    {
+      "id": "ref_1",
+      "friend": "Vel G",
+      "action": "Signup",
+      "reward": 10,
+      "timestamp": "2026-06-20T08:12:00.000Z"
+    },
+    {
+      "id": "ref_2",
+      "friend": "Selvi S",
+      "action": "Deploy App",
+      "reward": 20,
+      "timestamp": "2026-06-20T08:45:00.000Z"
+    }
+  ],
+  "plan": "Free",
+  "offerRedeemed": false,
+  "offerSignupTime": "2026-07-03T12:27:45.121Z",
+  "offerPopupShown": true
+}

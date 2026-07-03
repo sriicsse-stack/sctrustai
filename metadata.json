@@ -1,0 +1,6 @@
+{
+  "name": "Trust Me AI Builder",
+  "description": "Turn Ideas into Live Apps in Minutes. AI app builder with sandbox preview, requirement report analysis, billing credits, referral loops, and interactive doubt assistant.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

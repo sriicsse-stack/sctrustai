@@ -57,7 +57,8 @@ interface ReferralEarnViewProps {
   };
 }
 
-const BASE_URL = "https://trustmeai.com";
+// Use runtime origin or Vite APP_URL when available; avoid hardcoded external domain
+const APP_ORIGIN = (import.meta.env.VITE_APP_URL as string) || (typeof window !== "undefined" ? window.location.origin : "");
 
 function statusLabel(r: ReferralRecord) {
   if (r.paid_rewarded) return { text: "Paid Plan", color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" };
@@ -83,13 +84,9 @@ export default function ReferralEarnView({ userState }: ReferralEarnViewProps) {
 
   const user = userState.user;
 
-  // Derive referral link from real profile or fall back to placeholder
+  // Derive referral link from profile (server returns `referral_link`) or compute from code.
   const referralCode = profile?.referral_code ?? null;
-  const referralLink = referralCode
-    ? `${BASE_URL}/ref/${referralCode}`
-    : user
-    ? `${BASE_URL}/ref/...`
-    : null;
+  const referralLink = profile?.referral_link ?? (referralCode ? `${APP_ORIGIN.replace(/\/$/, "")}/ref/${referralCode}` : null);
 
   // ── Load / upsert profile + dashboard ───────────────────────────────────
   const loadDashboard = useCallback(async () => {
@@ -120,9 +117,33 @@ export default function ReferralEarnView({ userState }: ReferralEarnViewProps) {
         setReferrals(data.dashboard.referrals ?? []);
         setStats(data.dashboard.stats);
         setLiveCredits(data.dashboard.profile.credits);
+        // Auto-generate referral if missing
+        if (user && data.dashboard.profile && !data.dashboard.profile.referral_code && !data.dashboard.profile.referral_link) {
+          try {
+            const genRes = await fetch('/api/referrals/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+            const genJson = await genRes.json();
+            if (genJson?.referral) {
+              setProfile((prev) => ({ ...(prev || {}), referral_code: genJson.referral.referral_code, referral_link: genJson.referral.referral_link }));
+            }
+          } catch (e) {
+            console.warn('Auto-generate referral failed', e);
+          }
+        }
       } else if (data?.profile) {
         setProfile(data.profile);
         setLiveCredits(data.profile.credits);
+        // Auto-generate referral if missing on minimal profile response
+        if (user && data.profile && !data.profile.referral_code && !data.profile.referral_link) {
+          try {
+            const genRes = await fetch('/api/referrals/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+            const genJson = await genRes.json();
+            if (genJson?.referral) {
+              setProfile((prev) => ({ ...(prev || {}), referral_code: genJson.referral.referral_code, referral_link: genJson.referral.referral_link }));
+            }
+          } catch (e) {
+            console.warn('Auto-generate referral failed', e);
+          }
+        }
       }
     } finally {
       setLoading(false);
@@ -286,7 +307,7 @@ export default function ReferralEarnView({ userState }: ReferralEarnViewProps) {
                 <div className={`flex-1 min-w-0 border p-3 rounded-xl font-mono text-[11.5px] truncate select-all transition-colors ${
                   referralLink ? "bg-slate-950 border-slate-800 text-blue-400" : "bg-slate-950/50 border-slate-800/50 text-slate-600"
                 }`}>
-                  {referralLink ?? "https://trustmeai.com/ref/your-code"}
+                  {referralLink ?? (user ? "Generating referral..." : "Sign in to get your link")}
                 </div>
                 <button
                   onClick={handleCopy}

@@ -61,6 +61,22 @@ Deno.serve(async (req) => {
     try {
       const prof = (dashboard && (dashboard as any).profile) || profile;
       if (prof && (!prof.referral_code || !prof.referral_link)) {
+        // Verify `referrals` table exists by attempting a lightweight select.
+        try {
+          const { error: testErr } = await supabase.from('referrals').select('id').limit(1);
+          if (testErr) {
+            // Table likely missing or permission denied — attach warning and skip creation
+            return new Response(
+              JSON.stringify({ profile, dashboard, migrations_missing: true, message: 'Referrals table missing or inaccessible. Apply migrations.' }),
+              { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 },
+            );
+          }
+        } catch (te) {
+          return new Response(
+            JSON.stringify({ profile, dashboard, migrations_missing: true, message: 'Referrals table missing or inaccessible. Apply migrations.' }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 },
+          );
+        }
         // generate a TMAI-XXXXXXX style code
         const generateReferralCode = () => {
           const rand = Math.random().toString(36).substring(2, 10).toUpperCase();

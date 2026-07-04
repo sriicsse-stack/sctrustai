@@ -31,7 +31,7 @@ interface HeaderProps {
   onDeploy: (platform: string) => void;
   onDownload: () => void;
   onBackToHub: () => void;
-  hasApiKey: boolean;
+  openRouterStatus: "MISSING" | "CONFIGURED" | "CONNECTED";
   
   // Custom interactive channels & billing stats
   activeGlobalTab: "workspace" | "sri-ai" | "pricing" | "referral" | "admin" | "marketplace" | "dashboard";
@@ -63,7 +63,7 @@ export default function Header({
   onDeploy,
   onDownload,
   onBackToHub,
-  hasApiKey,
+  openRouterStatus,
   activeGlobalTab,
   setActiveGlobalTab,
   credits,
@@ -478,10 +478,10 @@ export default function Header({
 
           {/* OpenRouter API state */}
           <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-[#16161A] border border-slate-800 rounded-xl text-xs">
-            <div className={`h-1.5 w-1.5 rounded-full ${hasApiKey ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`} />
+            <div className={`h-1.5 w-1.5 rounded-full ${openRouterStatus === "CONNECTED" ? "bg-emerald-500 animate-pulse" : openRouterStatus === "CONFIGURED" ? "bg-amber-500" : "bg-rose-500"}`} />
             <span className="text-slate-400 font-mono text-[9px]">OPENROUTER AI</span>
-            <span className={`font-bold font-mono text-[10px] ${hasApiKey ? "text-emerald-400" : "text-rose-400"}`}>
-              {hasApiKey ? "ACTIVE" : "MISSING"}
+            <span className={`font-bold font-mono text-[10px] ${openRouterStatus === "CONNECTED" || openRouterStatus === "CONFIGURED" ? "text-emerald-400" : "text-rose-400"}`}>
+              {openRouterStatus === "CONNECTED" ? "CONNECTED" : openRouterStatus === "CONFIGURED" ? "READY" : "MISSING"}
             </span>
           </div>
 

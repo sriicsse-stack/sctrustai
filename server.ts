@@ -927,9 +927,39 @@ app.delete("/api/contacts/:resourceNameId", async (req, res) => {
 });
 
 // API: API Key Verification
-app.get("/api/api-key-status", (req, res) => {
+app.get("/api/api-key-status", async (req, res) => {
+  const keyCandidates = [
+    process.env.OPENROUTER_API_KEY,
+    process.env.VITE_OPENROUTER_API_KEY,
+    process.env.OPENROUTER_KEY,
+  ].filter(Boolean) as string[];
+
+  const configuredKey = keyCandidates.find((value) => value && value.trim() && value !== "your_openrouter_api_key" && value !== "YOUR_OPENROUTER_API_KEY");
+  const hasKey = Boolean(configuredKey);
+
+  let status: "MISSING" | "CONFIGURED" | "CONNECTED" = hasKey ? "CONFIGURED" : "MISSING";
+
+  if (hasKey) {
+    try {
+      const simpleTest = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: {
+          Authorization: `Bearer ${configuredKey}`,
+          "Content-Type": "application/json",
+        },
+      });
+      if (simpleTest.ok) {
+        status = "CONNECTED";
+      }
+    } catch (error) {
+      console.warn("OpenRouter health check failed:", error);
+    }
+  }
+
   res.json({
-    active: !!aiClient && !!process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== "your_openrouter_api_key"
+    active: status === "CONNECTED" || status === "CONFIGURED",
+    status,
+    hasKey,
+    keySource: process.env.OPENROUTER_API_KEY ? "OPENROUTER_API_KEY" : process.env.VITE_OPENROUTER_API_KEY ? "VITE_OPENROUTER_API_KEY" : process.env.OPENROUTER_KEY ? "OPENROUTER_KEY" : null,
   });
 });
 

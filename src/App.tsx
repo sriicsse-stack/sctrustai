@@ -210,7 +210,7 @@ export default function App() {
     images?: string[];
     estimate: CreditEstimate;
   }>(null);
-  const [apiKeyStatus, setApiKeyStatus] = useState(true);
+  const [apiKeyStatus, setApiKeyStatus] = useState<"MISSING" | "CONFIGURED" | "CONNECTED">("MISSING");
 
   // Multi-agent pipeline state
   const [buildPhase, setBuildPhase] = useState<"idle" | "analyze" | "plan" | "generate" | "validate" | "fix" | "deploy" | "complete">("idle");
@@ -834,9 +834,10 @@ export default function App() {
     try {
       const res = await fetch("/api/api-key-status");
       const data = await res.json();
-      setApiKeyStatus(!!data.active);
+      const status = data?.status || (data?.active ? "CONFIGURED" : "MISSING");
+      setApiKeyStatus(status === "CONNECTED" ? "CONNECTED" : status === "CONFIGURED" ? "CONFIGURED" : "MISSING");
     } catch (e) {
-      setApiKeyStatus(false);
+      setApiKeyStatus("MISSING");
     }
   };
 
@@ -2418,7 +2419,7 @@ export default function App() {
         onDeploy={handleDeploy}
         onDownload={handleDownloadZip}
         onBackToHub={handleBackToHub}
-        hasApiKey={apiKeyStatus}
+        openRouterStatus={apiKeyStatus}
         activeGlobalTab={activeGlobalTab}
         setActiveGlobalTab={setActiveGlobalTab}
         credits={userState.credits}

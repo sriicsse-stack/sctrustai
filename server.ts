@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import JSZip from "jszip";
 import { collectVercelDeploymentFiles } from "./src/lib/vercelUpload";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
+import { adminAuth } from "./src/lib/adminAuth";
 
 dotenv.config();
 
@@ -722,10 +723,11 @@ app.post("/api/student-verification/submit", async (req, res) => {
 });
 
 // Admin: list verifications (requires ADMIN_TOKEN header)
+// Protect admin routes using middleware that checks process.env.ADMIN_TOKEN
+app.use("/api/admin", adminAuth);
+
+// Admin: list verifications (requires ADMIN_TOKEN header)
 app.get("/api/admin/student-verifications", async (req, res) => {
-  const adminToken = process.env.ADMIN_TOKEN || "";
-  const header = req.headers["x-admin-token"] as string || "";
-  if (!adminToken || header !== adminToken) return res.status(403).json({ error: "Forbidden" });
   if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
 
   try {
@@ -738,9 +740,6 @@ app.get("/api/admin/student-verifications", async (req, res) => {
 
 // Admin approve
 app.post("/api/admin/student-verifications/:id/approve", async (req, res) => {
-  const adminToken = process.env.ADMIN_TOKEN || "";
-  const header = req.headers["x-admin-token"] as string || "";
-  if (!adminToken || header !== adminToken) return res.status(403).json({ error: "Forbidden" });
   if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
 
   try {
@@ -763,9 +762,6 @@ app.post("/api/admin/student-verifications/:id/approve", async (req, res) => {
 
 // Admin reject
 app.post("/api/admin/student-verifications/:id/reject", async (req, res) => {
-  const adminToken = process.env.ADMIN_TOKEN || "";
-  const header = req.headers["x-admin-token"] as string || "";
-  if (!adminToken || header !== adminToken) return res.status(403).json({ error: "Forbidden" });
   if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
 
   try {

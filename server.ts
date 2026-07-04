@@ -603,6 +603,11 @@ app.post("/api/referrals/redeem", async (req, res) => {
     const { data: ref } = await supabaseAdmin.from("referrals").select("*").eq("referral_code", code).limit(1).single();
     if (!ref) return res.status(404).json({ error: "Referral code not found" });
 
+    // Prevent self-referral
+    if (ref.referrer_user_id && ref.referrer_user_id === referred_user_id) {
+      return res.status(400).json({ error: "Cannot refer yourself" });
+    }
+
     // Prevent duplicate signup reward
     const { data: existing } = await supabaseAdmin.from("referral_rewards").select("*").eq("referrer_user_id", ref.referrer_user_id).eq("referred_user_id", referred_user_id).eq("reward_type", "signup").limit(1).single();
     if (existing) return res.json({ success: false, message: "Signup reward already granted" });
@@ -610,7 +615,7 @@ app.post("/api/referrals/redeem", async (req, res) => {
     // Grant signup reward (25 credits)
     await supabaseAdmin.from("referral_rewards").insert([{ referrer_user_id: ref.referrer_user_id, referred_user_id, referral_code: code, reward_type: "signup", amount: 25 }]);
 
-    // Update referral counters
+    // Update referral counters atomically
     await supabaseAdmin.from("referrals").update({ total_referrals: (ref.total_referrals || 0) + 1, successful_referrals: (ref.successful_referrals || 0) + 1, earned_credits: (ref.earned_credits || 0) + 25 }).eq("id", ref.id);
 
     return res.json({ success: true, message: "Signup reward granted" });
@@ -629,6 +634,11 @@ app.post("/api/referrals/purchase", async (req, res) => {
     const { data: ref } = await supabaseAdmin.from("referrals").select("*").eq("referral_code", code).limit(1).single();
     if (!ref) return res.status(404).json({ error: "Referral code not found" });
 
+    // Prevent self-referral
+    if (ref.referrer_user_id && ref.referrer_user_id === referred_user_id) {
+      return res.status(400).json({ error: "Cannot refer yourself" });
+    }
+
     // Ensure signup reward exists first
     const { data: signup } = await supabaseAdmin.from("referral_rewards").select("*").eq("referrer_user_id", ref.referrer_user_id).eq("referred_user_id", referred_user_id).eq("reward_type", "signup").limit(1).single();
     if (!signup) return res.status(400).json({ error: "Signup reward not found; cannot grant purchase reward" });
@@ -640,11 +650,42 @@ app.post("/api/referrals/purchase", async (req, res) => {
     // Grant purchase reward (25 credits)
     await supabaseAdmin.from("referral_rewards").insert([{ referrer_user_id: ref.referrer_user_id, referred_user_id, referral_code: code, reward_type: "purchase", amount: 25 }]);
 
-    // Update referral counters and credits (cap handled by UI/server when necessary)
-    const earned = Math.min((ref.earned_credits || 0) + 25, 50);
-    await supabaseAdmin.from("referrals").update({ earned_credits: earned }).eq("id", ref.id);
+    // Update referral counters and credits (cap at 50)
+    const newEarned = Math.min((ref.earned_credits || 0) + 25, 50);
+    const newSuccessful = (ref.successful_referrals || 0) + 1;
+    await supabaseAdmin.from("referrals").update({ earned_credits: newEarned, successful_referrals: newSuccessful }).eq("id", ref.id);
 
     return res.json({ success: true, message: "Purchase reward granted" });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Return referral history (rewards) for authenticated referrer
+app.get("/api/referrals/history", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+  const sessionCookie = getCookieValue(req, "google_auth_session");
+  if (!sessionCookie) return res.status(401).json({ error: "Authentication required" });
+  const user = JSON.parse(decodeURIComponent(sessionCookie));
+  const userId = user.googleId || user.email;
+
+  try {
+    const { data } = await supabaseAdmin.from("referral_rewards").select("*, referrals(referral_code)").eq("referrer_user_id", userId).order("created_at", { ascending: false });
+    return res.json({ success: true, history: data });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// List referred users for a referral code
+app.get("/api/referrals/list", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+  const code = (req.query.code || "") as string;
+  if (!code) return res.status(400).json({ error: "code query param required" });
+
+  try {
+    const { data } = await supabaseAdmin.from("referral_rewards").select("referred_user_id, reward_type, amount, created_at").eq("referral_code", code).order("created_at", { ascending: false });
+    return res.json({ success: true, referred: data });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || String(err) });
   }

@@ -587,16 +587,6 @@ app.get(["/auth/callback", "/auth/callback/"], async (req, res) => {
         grant_type: "authorization_code"
       })
     });
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code: code as string,
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code"
-      })
-    });
     
     if (!tokenRes.ok) {
       const errorText = await tokenRes.text();

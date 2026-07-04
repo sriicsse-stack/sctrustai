@@ -2116,9 +2116,11 @@ app.use((req: any, res: any, next: any) => {
   next();
 });
 
-// Start Express API server (Vite serves the SPA on port 50000 and proxies /api here)
+const isVercel = !!process.env.VERCEL;
+
+// Start Express API server locally. In Vercel serverless, export the app instead.
 async function startServer() {
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" && !isVercel) {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -2141,4 +2143,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!isVercel) {
+  startServer();
+}
+
+export default app;

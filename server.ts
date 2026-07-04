@@ -6,8 +6,19 @@ import OpenAI from "openai";
 import dotenv from "dotenv";
 import JSZip from "jszip";
 import { collectVercelDeploymentFiles } from "./src/lib/vercelUpload";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
+
+// Supabase admin client (requires service role key in env)
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
+let supabaseAdmin: any = null;
+if (SUPABASE_URL && SUPABASE_SERVICE_ROLE) {
+  supabaseAdmin = createSupabaseClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+} else {
+  console.warn("[Supabase] Service role key missing. Referral and verification APIs require SUPABASE_SERVICE_ROLE in environment.");
+}
 
 /**
  * Robust JSON parser that handles common LLM response issues:
@@ -541,6 +552,230 @@ app.get("/api/auth/audit-info", (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to audit credentials" });
+  }
+});
+
+// ------------------------------
+// Referral & Student Verification APIs
+// ------------------------------
+
+function generateReferralCode() {
+  const rand = Math.random().toString(36).substring(2, 10).toUpperCase();
+  return `TMAI-${rand}`;
+}
+
+// Create referral for a user (generate unique code)
+app.post("/api/referrals/generate", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+  const sessionCookie = getCookieValue(req, "google_auth_session");
+  if (!sessionCookie) return res.status(401).json({ error: "Authentication required" });
+  const user = JSON.parse(decodeURIComponent(sessionCookie));
+  const userId = user.googleId || user.email;
+
+  try {
+    // Ensure unique code
+    let code = generateReferralCode();
+    let exists = true;
+    for (let i = 0; i < 6 && exists; i++) {
+      const { data: ex } = await supabaseAdmin.from("referrals").select("id").eq("referral_code", code).limit(1);
+      if (!ex || ex.length === 0) exists = false; else code = generateReferralCode();
+    }
+
+    const appUrl = resolveAppUrl(req);
+    const link = `${appUrl.replace(/\/$/, "")}/ref/${code}`;
+
+    const { data, error } = await supabaseAdmin.from("referrals").insert([{ referral_code: code, referral_link: link, referrer_user_id: userId }]).select().single();
+    if (error) return res.status(500).json({ error: error.message || error });
+    return res.json({ success: true, referral: data });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Redeem referral at signup: payload { code, referred_user_id }
+app.post("/api/referrals/redeem", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+  const { code, referred_user_id } = req.body || {};
+  if (!code || !referred_user_id) return res.status(400).json({ error: "code and referred_user_id are required" });
+
+  try {
+    const { data: ref } = await supabaseAdmin.from("referrals").select("*").eq("referral_code", code).limit(1).single();
+    if (!ref) return res.status(404).json({ error: "Referral code not found" });
+
+    // Prevent duplicate signup reward
+    const { data: existing } = await supabaseAdmin.from("referral_rewards").select("*").eq("referrer_user_id", ref.referrer_user_id).eq("referred_user_id", referred_user_id).eq("reward_type", "signup").limit(1).single();
+    if (existing) return res.json({ success: false, message: "Signup reward already granted" });
+
+    // Grant signup reward (25 credits)
+    await supabaseAdmin.from("referral_rewards").insert([{ referrer_user_id: ref.referrer_user_id, referred_user_id, referral_code: code, reward_type: "signup", amount: 25 }]);
+
+    // Update referral counters
+    await supabaseAdmin.from("referrals").update({ total_referrals: (ref.total_referrals || 0) + 1, successful_referrals: (ref.successful_referrals || 0) + 1, earned_credits: (ref.earned_credits || 0) + 25 }).eq("id", ref.id);
+
+    return res.json({ success: true, message: "Signup reward granted" });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Purchase reward: payload { code, referred_user_id }
+app.post("/api/referrals/purchase", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+  const { code, referred_user_id } = req.body || {};
+  if (!code || !referred_user_id) return res.status(400).json({ error: "code and referred_user_id are required" });
+
+  try {
+    const { data: ref } = await supabaseAdmin.from("referrals").select("*").eq("referral_code", code).limit(1).single();
+    if (!ref) return res.status(404).json({ error: "Referral code not found" });
+
+    // Ensure signup reward exists first
+    const { data: signup } = await supabaseAdmin.from("referral_rewards").select("*").eq("referrer_user_id", ref.referrer_user_id).eq("referred_user_id", referred_user_id).eq("reward_type", "signup").limit(1).single();
+    if (!signup) return res.status(400).json({ error: "Signup reward not found; cannot grant purchase reward" });
+
+    // Prevent duplicate purchase reward
+    const { data: existing } = await supabaseAdmin.from("referral_rewards").select("*").eq("referrer_user_id", ref.referrer_user_id).eq("referred_user_id", referred_user_id).eq("reward_type", "purchase").limit(1).single();
+    if (existing) return res.json({ success: false, message: "Purchase reward already granted" });
+
+    // Grant purchase reward (25 credits)
+    await supabaseAdmin.from("referral_rewards").insert([{ referrer_user_id: ref.referrer_user_id, referred_user_id, referral_code: code, reward_type: "purchase", amount: 25 }]);
+
+    // Update referral counters and credits (cap handled by UI/server when necessary)
+    const earned = Math.min((ref.earned_credits || 0) + 25, 50);
+    await supabaseAdmin.from("referrals").update({ earned_credits: earned }).eq("id", ref.id);
+
+    return res.json({ success: true, message: "Purchase reward granted" });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Stats for current user
+app.get("/api/referrals/stats", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+  const sessionCookie = getCookieValue(req, "google_auth_session");
+  if (!sessionCookie) return res.status(401).json({ error: "Authentication required" });
+  const user = JSON.parse(decodeURIComponent(sessionCookie));
+  const userId = user.googleId || user.email;
+
+  try {
+    const { data: ref } = await supabaseAdmin.from("referrals").select("*").eq("referrer_user_id", userId).limit(1).single();
+    if (!ref) return res.json({ success: true, referral: null });
+    return res.json({ success: true, referral: ref });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// ------------------------------
+// Student Verification endpoints
+// ------------------------------
+
+// Accept student verification submission. Supports base64 images or file URLs.
+app.post("/api/student-verification/submit", async (req, res) => {
+  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+  const payload = req.body || {};
+  const required = ["full_name", "registered_email", "college_name", "course", "year", "mobile_number"];
+  for (const f of required) if (!payload[f]) return res.status(400).json({ error: `${f} is required` });
+
+  try {
+    // If ID images provided as base64 strings, save them to /public/uploads
+    const uploadsDir = path.join(process.cwd(), "public", "uploads");
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+    let frontUrl = payload.id_front_url || null;
+    let backUrl = payload.id_back_url || null;
+
+    if (payload.id_front_base64 && !frontUrl) {
+      const data = payload.id_front_base64.replace(/^data:\w+\/[a-zA-Z]+;base64,/, "");
+      const fname = `front_${Date.now()}.png`;
+      const fpath = path.join(uploadsDir, fname);
+      fs.writeFileSync(fpath, Buffer.from(data, "base64"));
+      frontUrl = `/uploads/${fname}`;
+    }
+    if (payload.id_back_base64 && !backUrl) {
+      const data = payload.id_back_base64.replace(/^data:\w+\/[a-zA-Z]+;base64,/, "");
+      const fname = `back_${Date.now()}.png`;
+      const fpath = path.join(uploadsDir, fname);
+      fs.writeFileSync(fpath, Buffer.from(data, "base64"));
+      backUrl = `/uploads/${fname}`;
+    }
+
+    const record: any = {
+      user_id: payload.user_id || null,
+      full_name: payload.full_name,
+      mobile_number: payload.mobile_number,
+      college_name: payload.college_name,
+      course: payload.course,
+      year: payload.year,
+      registered_email: payload.registered_email,
+      id_front_url: frontUrl,
+      id_back_url: backUrl,
+      status: "pending"
+    };
+
+    const { data, error } = await supabaseAdmin.from("student_verifications").insert([record]).select().single();
+    if (error) return res.status(500).json({ error: error.message || error });
+    return res.json({ success: true, verification: data });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Admin: list verifications (requires ADMIN_TOKEN header)
+app.get("/api/admin/student-verifications", async (req, res) => {
+  const adminToken = process.env.ADMIN_TOKEN || "";
+  const header = req.headers["x-admin-token"] as string || "";
+  if (!adminToken || header !== adminToken) return res.status(403).json({ error: "Forbidden" });
+  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+
+  try {
+    const { data } = await supabaseAdmin.from("student_verifications").select("*").order("submitted_at", { ascending: false });
+    return res.json({ success: true, verifications: data });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Admin approve
+app.post("/api/admin/student-verifications/:id/approve", async (req, res) => {
+  const adminToken = process.env.ADMIN_TOKEN || "";
+  const header = req.headers["x-admin-token"] as string || "";
+  if (!adminToken || header !== adminToken) return res.status(403).json({ error: "Forbidden" });
+  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+
+  try {
+    const id = req.params.id;
+    // Count current approved
+    const { count: approvedCountRes } = await supabaseAdmin.from("student_verifications").select("id", { count: "exact", head: true }).eq("status", "approved");
+    const approvedCount = typeof approvedCountRes === "number" ? approvedCountRes : 0;
+
+    if (approvedCount >= 10) {
+      return res.status(400).json({ success: false, message: "Student Launch Offer Closed" });
+    }
+
+    const { data, error } = await supabaseAdmin.from("student_verifications").update({ status: "approved", reviewed_at: new Date().toISOString() }).eq("id", id).select().single();
+    if (error) return res.status(500).json({ error: error.message || error });
+    return res.json({ success: true, verification: data, slots_left: Math.max(0, 10 - (approvedCount + 1)) });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Admin reject
+app.post("/api/admin/student-verifications/:id/reject", async (req, res) => {
+  const adminToken = process.env.ADMIN_TOKEN || "";
+  const header = req.headers["x-admin-token"] as string || "";
+  if (!adminToken || header !== adminToken) return res.status(403).json({ error: "Forbidden" });
+  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+
+  try {
+    const id = req.params.id;
+    const { reason } = req.body || {};
+    const { data, error } = await supabaseAdmin.from("student_verifications").update({ status: "rejected", reviewed_at: new Date().toISOString(), rejection_reason: reason || null }).eq("id", id).select().single();
+    if (error) return res.status(500).json({ error: error.message || error });
+    return res.json({ success: true, verification: data });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || String(err) });
   }
 });
 

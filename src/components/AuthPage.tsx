@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Sparkles, ShieldCheck, ArrowRight, Lock, Mail, Users, Zap } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import { readJsonResponse } from "../lib/apiResponse";
 
 type UserInfo = {
   name: string;
@@ -64,12 +65,12 @@ const AuthPage = ({ setUserState, setActiveGlobalTab }: AuthPageProps) => {
 
     try {
       const res = await fetch("/api/user-state");
-      const data = await res.json();
-      if (data && !data.error) {
+      const data = await readJsonResponse(res);
+      if (data && !("error" in data && data.error)) {
         setUserState((prev) => ({
           ...prev,
           ...data,
-          user: prev.user || data.user || user,
+          user: prev.user || (data as any).user || user,
         }));
       }
     } catch (error) {
@@ -156,8 +157,11 @@ const AuthPage = ({ setUserState, setActiveGlobalTab }: AuthPageProps) => {
 
     try {
       const res = await fetch("/api/auth/google-url");
-      const data = await res.json();
+      const data = await readJsonResponse<{ url?: string; error?: string }>(res);
       if (!res.ok) {
+        throw new Error(data.error || "Unable to start Google sign-in.");
+      }
+      if (!data.url) {
         throw new Error(data.error || "Unable to start Google sign-in.");
       }
       const popup = window.open(data.url, "GoogleSignIn", "width=600,height=700");

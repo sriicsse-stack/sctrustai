@@ -410,7 +410,8 @@ app.get("/api/user-state", (req, res) => {
       }
     } catch (e) {}
   }
-  res.json({
+  return res.json({
+    success: true,
     ...state,
     user: loggedInUser
   });
@@ -420,11 +421,11 @@ app.get("/api/user-state", (req, res) => {
 app.get("/api/auth/google-url", (req, res) => {
   try {
     const appUrl = resolveAppUrl(req);
-    
+
     if (isMissingGoogleCredential(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) || GOOGLE_CLIENT_ID === "YOUR_GOOGLE_CLIENT_ID" || GOOGLE_CLIENT_ID.includes("PLACEHOLDER")) {
-      throw new Error("Google Client ID/Secret are missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your environment.");
+      return res.status(500).json({ success: false, error: "Google Client ID/Secret are missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your environment." });
     }
-    
+
     const redirectUri = `${appUrl}/auth/callback`;
     console.log("[Google OAuth] client_id=", GOOGLE_CLIENT_ID, "redirect_uri=", redirectUri, "origin=", req.headers.origin || null, "callbackUrl=", redirectUri);
     const params = new URLSearchParams({
@@ -435,11 +436,11 @@ app.get("/api/auth/google-url", (req, res) => {
       access_type: "offline",
       prompt: "select_account"
     });
-    
+
     const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-    res.json({ url: authUrl, clientId: GOOGLE_CLIENT_ID, redirectUri, origin: req.headers.origin || null, callbackUrl: redirectUri });
+    return res.json({ success: true, url: authUrl, clientId: GOOGLE_CLIENT_ID, redirectUri, origin: req.headers.origin || null, callbackUrl: redirectUri });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to construct the secure authorization URL" });
+    return res.status(500).json({ success: false, error: err.message || "Failed to construct the secure authorization URL" });
   }
 });
 
@@ -637,13 +638,13 @@ app.get(["/auth/callback", "/auth/callback/"], async (req, res) => {
 // API: Client-Side direct registration with pre-fetched auth code info
 app.post("/api/auth/google-login-code", async (req, res) => {
   const { code, redirectUri: clientRedirectUri } = req.body;
-  
+
   if (!code) {
-    return res.status(400).json({ error: "Authorization code is required" });
+    return res.status(400).json({ success: false, error: "Authorization code is required" });
   }
-  
+
   if (isMissingGoogleCredential(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)) {
-    return res.status(400).json({ error: "Google Client ID/Secret are missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your environment." });
+    return res.status(400).json({ success: false, error: "Google Client ID/Secret are missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your environment." });
   }
 
   try {
@@ -672,7 +673,7 @@ app.post("/api/auth/google-login-code", async (req, res) => {
       let parsedErr: any;
       try { parsedErr = JSON.parse(errorText); } catch (e) {}
       const errMsg = parsedErr?.error_description || parsedErr?.error || errorText;
-      return res.status(400).json({ error: `Google identity token verification failed: ${errMsg}` });
+      return res.status(400).json({ success: false, error: `Google identity token verification failed: ${errMsg}` });
     }
     
     const tokenData = await tokenRes.json();
@@ -684,7 +685,7 @@ app.post("/api/auth/google-login-code", async (req, res) => {
     
     if (!userInfoRes.ok) {
       const errorText = await userInfoRes.text();
-      return res.status(400).json({ error: `Google profile API fetch failed: ${errorText}` });
+      return res.status(400).json({ success: false, error: `Google profile API fetch failed: ${errorText}` });
     }
     
     const userInfo = await userInfoRes.json();
@@ -705,12 +706,13 @@ app.post("/api/auth/google-login-code", async (req, res) => {
     );
     
     const state = getUserState();
-    res.json({
+    return res.json({
+      success: true,
       ...state,
       user: userSession
     });
   } catch (err: any) {
-    res.status(500).json({ error: `Server authentication error: ${err.message}` });
+    return res.status(500).json({ success: false, error: `Server authentication error: ${err.message}` });
   }
 });
 
@@ -720,7 +722,7 @@ app.post("/api/auth/logout", (req, res) => {
     "Set-Cookie",
     "google_auth_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=None"
   );
-  res.json({ success: true });
+  return res.json({ success: true });
 });
 
 // API: List Google Contacts from People API
@@ -2083,13 +2085,20 @@ ${project.description}
   }
 });
 
+app.use((req: any, res: any, next: any) => {
+  if (req.path.startsWith("/api/")) {
+    return res.status(404).json({ success: false, error: "API endpoint not found" });
+  }
+  next();
+});
+
 // Start Express API server (Vite serves the SPA on port 50000 and proxies /api here)
 async function startServer() {
   if (process.env.NODE_ENV === "production") {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      return res.sendFile(path.join(distPath, "index.html"));
     });
   }
 

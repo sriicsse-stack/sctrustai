@@ -63,6 +63,7 @@ import DashboardPage from "./components/DashboardPage";
 import { ProjectDetails, ProjectSummary } from "./types";
 import CreditConfirmModal from "./components/workspace/CreditConfirmModal";
 import { estimateCreditCost, type CreditEstimate } from "./lib/creditCost";
+import { readJsonResponse } from "./lib/apiResponse";
 
 // Custom fetch helper: sanitizes header values to printable ASCII (avoids Android
 // WebView "not a valid ByteString" TypeError) and injects auth headers for /api calls.
@@ -130,7 +131,7 @@ export default function App() {
       try {
         const res = await fetch("/api/user-state");
         if (res.ok) {
-          const data = await res.json();
+          const data = await readJsonResponse(res);
           if (data?.user) {
             setUserState(prev => ({ ...prev, ...data, user: data.user }));
           }

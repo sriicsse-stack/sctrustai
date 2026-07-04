@@ -117,31 +117,49 @@ export default function ReferralEarnView({ userState }: ReferralEarnViewProps) {
         setReferrals(data.dashboard.referrals ?? []);
         setStats(data.dashboard.stats);
         setLiveCredits(data.dashboard.profile.credits);
-        // Auto-generate referral if missing
+        // Auto-generate referral if missing using Supabase Edge function instead of Express API
         if (user && data.dashboard.profile && !data.dashboard.profile.referral_code && !data.dashboard.profile.referral_link) {
           try {
-            const genRes = await fetch('/api/referrals/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-            const genJson = await genRes.json();
-            if (genJson?.referral) {
-              setProfile((prev) => ({ ...(prev || {}), referral_code: genJson.referral.referral_code, referral_link: genJson.referral.referral_link }));
+            const { data: genData, error: genErr } = await supabase.functions.invoke('referral-profile', {
+              body: {
+                user_id: user.googleId,
+                email: user.email,
+                name: user.name,
+                picture: user.picture,
+                fetch_dashboard: true,
+                auto_create_referral: true,
+              },
+            });
+            if (!genErr && genData) {
+              const prof = genData.dashboard?.profile ?? genData.profile;
+              if (prof) setProfile(prof);
             }
           } catch (e) {
-            console.warn('Auto-generate referral failed', e);
+            console.warn('Auto-generate referral via Edge function failed', e);
           }
         }
       } else if (data?.profile) {
         setProfile(data.profile);
         setLiveCredits(data.profile.credits);
-        // Auto-generate referral if missing on minimal profile response
+        // Auto-generate referral if missing on minimal profile response via Edge function
         if (user && data.profile && !data.profile.referral_code && !data.profile.referral_link) {
           try {
-            const genRes = await fetch('/api/referrals/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-            const genJson = await genRes.json();
-            if (genJson?.referral) {
-              setProfile((prev) => ({ ...(prev || {}), referral_code: genJson.referral.referral_code, referral_link: genJson.referral.referral_link }));
+            const { data: genData, error: genErr } = await supabase.functions.invoke('referral-profile', {
+              body: {
+                user_id: user.googleId,
+                email: user.email,
+                name: user.name,
+                picture: user.picture,
+                fetch_dashboard: false,
+                auto_create_referral: true,
+              },
+            });
+            if (!genErr && genData) {
+              const prof = genData.profile ?? genData.dashboard?.profile;
+              if (prof) setProfile(prof);
             }
           } catch (e) {
-            console.warn('Auto-generate referral failed', e);
+            console.warn('Auto-generate referral via Edge function failed', e);
           }
         }
       }

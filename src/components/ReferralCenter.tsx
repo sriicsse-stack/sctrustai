@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { supabase } from "../lib/supabaseClient";
 
 export default function ReferralCenter() {
   const [referral, setReferral] = useState<any>(null);
@@ -7,17 +8,48 @@ export default function ReferralCenter() {
   const [history, setHistory] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch("/api/referrals/stats")
-      .then((r) => r.json())
-      .then((d) => { if (d && d.referral) setReferral(d.referral); })
-      .catch(() => {});
-    fetch("/api/referrals/history").then((r) => r.json()).then((d) => { if (d?.history) setHistory(d.history); }).catch(() => {});
+    // Use Supabase Edge function to fetch profile + dashboard (creates referral if missing)
+    (async () => {
+      try {
+        let user = null;
+        try {
+          const { data: userData } = await supabase.auth.getUser();
+          if (userData?.user) {
+            user = { googleId: userData.user.id, email: userData.user.email, name: (userData.user.user_metadata as any)?.full_name, picture: (userData.user.user_metadata as any)?.avatar_url };
+          }
+        } catch (_) {}
+        if (!user) {
+          try { const s = await (await fetch('/api/user-state')).json(); user = s.user; } catch (_) { user = null; }
+        }
+        if (!user) return;
+        const { data, error } = await supabase.functions.invoke('referral-profile', {
+          body: { user_id: user.googleId, email: user.email, name: user.name, picture: user.picture, fetch_dashboard: true }
+        });
+        if (!error && data) {
+          const ref = data.dashboard?.profile ?? data.profile;
+          if (ref) setReferral(ref);
+          if (data.dashboard?.referrals) setHistory(data.dashboard.referrals);
+        }
+      } catch (e) {
+        // ignore
+      }
+    })();
   }, []);
 
   const onGenerate = async () => {
-    const res = await fetch(`/api/referrals/generate`, { method: "POST", headers: { "Content-Type": "application/json" } });
-    const j = await res.json();
-    if (j?.referral) setReferral(j.referral);
+    try {
+      const user = (await (await fetch('/api/user-state')).json()).user;
+      if (!user) return;
+      const { data, error } = await (window as any).supabase.functions.invoke('referral-profile', {
+        body: { user_id: user.googleId, email: user.email, name: user.name, picture: user.picture, fetch_dashboard: false, auto_create_referral: true }
+      });
+      if (!error && data) {
+        const prof = data.profile ?? data.dashboard?.profile;
+        if (prof) setReferral(prof);
+      }
+    } catch (e) {
+      console.warn('Generate referral failed', e);
+    }
   };
 
   const onCopy = (link: string) => {

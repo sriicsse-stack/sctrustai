@@ -148,6 +148,7 @@ export default function App() {
         const user = mapSupabaseSessionToUser(session);
         if (user) {
           setUserState(prev => ({ ...prev, user }));
+          setActiveGlobalTab("workspace");
         }
       } else {
         setUserState(prev => ({ ...prev, user: null }));
@@ -754,7 +755,7 @@ export default function App() {
   const fetchUserState = async () => {
     try {
       const res = await fetch("/api/user-state");
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (data && !data.error) {
         setUserState(prev => ({
           ...prev,
@@ -771,23 +772,37 @@ export default function App() {
     try {
       setOauthError(null);
       setAuthLoading(true);
-      const res = await fetch("/api/auth/google-url");
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Unable to start Google sign-in.");
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin,
+          skipBrowserRedirect: true,
+          queryParams: {
+            prompt: "select_account",
+          },
+        },
+      });
+
+      if (error) {
+        throw error;
       }
-      const popup = window.open(data.url, "GoogleSignIn", "width=600,height=700");
-      if (!popup) {
-        throw new Error("Popup blocked. Please allow popups and try again.");
-      }
-      authPopupRef.current = popup;
-      const poll = window.setInterval(() => {
-        if (!popup || popup.closed) {
-          window.clearInterval(poll);
-          setAuthLoading(false);
-          authPopupRef.current = null;
+
+      if (data?.url) {
+        const popup = window.open(data.url, "GoogleSignIn", "width=600,height=700");
+        if (!popup) {
+          throw new Error("Popup blocked. Please allow popups and try again.");
         }
-      }, 500);
+        authPopupRef.current = popup;
+        const poll = window.setInterval(() => {
+          if (!popup || popup.closed) {
+            window.clearInterval(poll);
+            setAuthLoading(false);
+            authPopupRef.current = null;
+          }
+        }, 500);
+      } else {
+        setAuthLoading(false);
+      }
     } catch (err: any) {
       console.error("Google auth start error:", err);
       setOauthError(err.message || "Google sign-in failed. Please try again.");

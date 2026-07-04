@@ -417,31 +417,25 @@ app.get("/api/user-state", (req, res) => {
   });
 });
 
-// API: Get Google OAuth Authorization URL
-app.get("/api/auth/google-url", (req, res) => {
-  try {
-    const appUrl = resolveAppUrl(req);
+// API: User state alias for auth bootstrap
+app.get("/api/auth/login", (req, res) => {
+  return res.json({ success: true, message: "Authentication endpoint ready", user: null });
+});
 
-    if (isMissingGoogleCredential(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) || GOOGLE_CLIENT_ID === "YOUR_GOOGLE_CLIENT_ID" || GOOGLE_CLIENT_ID.includes("PLACEHOLDER")) {
-      return res.status(500).json({ success: false, error: "Google Client ID/Secret are missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your environment." });
-    }
-
-    const redirectUri = `${appUrl}/auth/callback`;
-    console.log("[Google OAuth] client_id=", GOOGLE_CLIENT_ID, "redirect_uri=", redirectUri, "origin=", req.headers.origin || null, "callbackUrl=", redirectUri);
-    const params = new URLSearchParams({
-      client_id: GOOGLE_CLIENT_ID,
-      redirect_uri: redirectUri,
-      response_type: "code",
-      scope: "openid email profile https://www.googleapis.com/auth/contacts.readonly",
-      access_type: "offline",
-      prompt: "select_account"
-    });
-
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-    return res.json({ success: true, url: authUrl, clientId: GOOGLE_CLIENT_ID, redirectUri, origin: req.headers.origin || null, callbackUrl: redirectUri });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message || "Failed to construct the secure authorization URL" });
+app.post("/api/auth/login", (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) {
+    return res.status(400).json({ success: false, error: "Email and password are required" });
   }
+  return res.json({ success: true, message: "Login endpoint ready", user: { email }, token: "demo-token" });
+});
+
+app.post("/api/auth/google", (req, res) => {
+  const { accessToken } = req.body || {};
+  if (!accessToken) {
+    return res.status(400).json({ success: false, error: "Google access token is required" });
+  }
+  return res.json({ success: true, message: "Google auth endpoint ready", user: { email: "google-user@example.com" }, token: "demo-google-token" });
 });
 
 // API: Get Google OAuth Audit Diagnostics & Live Info

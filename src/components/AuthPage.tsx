@@ -156,26 +156,31 @@ const AuthPage = ({ setUserState, setActiveGlobalTab }: AuthPageProps) => {
     setAuthLoading(true);
 
     try {
-      const res = await fetch("/api/auth/google-url");
-      const data = await readJsonResponse<{ url?: string; error?: string }>(res);
-      if (!res.ok) {
-        throw new Error(data.error || "Unable to start Google sign-in.");
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin,
+          skipBrowserRedirect: true,
+          queryParams: {
+            prompt: "select_account",
+          },
+        },
+      });
+
+      if (error) {
+        throw error;
       }
-      if (!data.url) {
-        throw new Error(data.error || "Unable to start Google sign-in.");
-      }
-      const popup = window.open(data.url, "GoogleSignIn", "width=600,height=700");
-      if (!popup) {
-        throw new Error("Popup blocked. Please allow popups and try again.");
-      }
-      authPopupRef.current = popup;
-      setStatusMessage({ type: "info", text: "Opening Google sign-in in a new window..." });
-      const poll = window.setInterval(() => {
-        if (!popup || popup.closed) {
-          window.clearInterval(poll);
-          setAuthLoading(false);
+
+      if (data?.url) {
+        const popup = window.open(data.url, "GoogleSignIn", "width=600,height=700");
+        if (!popup) {
+          throw new Error("Popup blocked. Please allow popups and try again.");
         }
-      }, 500);
+        authPopupRef.current = popup;
+        setStatusMessage({ type: "info", text: "Opening Google sign-in in a new window..." });
+      } else {
+        setStatusMessage({ type: "info", text: "Google sign-in started. Complete the popup to continue." });
+      }
     } catch (error: any) {
       setStatusMessage({ type: "error", text: error?.message || "Google sign-in failed. Please try again." });
       setAuthLoading(false);

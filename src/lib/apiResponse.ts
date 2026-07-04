@@ -1,5 +1,11 @@
 export async function readJsonResponse<T = any>(response: Response): Promise<T> {
   const text = await response.text();
+  console.log("Auth Response:", {
+    url: response.url,
+    status: response.status,
+    headers: Object.fromEntries(response.headers.entries()),
+    body: text,
+  });
 
   if (!text) {
     return { success: false, error: "Empty response body" } as T;

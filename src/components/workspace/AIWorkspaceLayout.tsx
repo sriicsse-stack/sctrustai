@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 import WorkspaceTopBar, { DeployStatus } from "./WorkspaceTopBar";
 import AIAssistantPanel, { AIMessage, TaskStep, BuildLogEntry } from "./AIAssistantPanel";
 import LivePreviewPanel from "./LivePreviewPanel";
@@ -253,15 +253,7 @@ export default function AIWorkspaceLayout({
       makeLog("info", "Initiating deployment pipeline…"),
       makeLog("info", "Bundling assets and optimizing build…"),
     ]);
-    // Simulate URL after deployment
-    setTimeout(() => {
-      const url = `https://app-${currentProject?.id?.slice(0, 8) || "preview"}.trustme.ai`;
-      setPublishedUrl(url);
-      setBuildLogs(prev => [...prev,
-        makeLog("success", `Deployed to ${url}`),
-      ]);
-    }, 3000);
-  }, [currentProject, onDeploy]);
+  }, [onDeploy]);
 
   const handleUpdate = useCallback(() => {
     onDeploy("Vercel");

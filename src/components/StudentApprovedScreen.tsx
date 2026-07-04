@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { motion } from "motion/react";
+import { motion } from "framer-motion";
 import { GraduationCap, Star, Zap, Shield, Gift, X } from "lucide-react";
 
 interface Props {

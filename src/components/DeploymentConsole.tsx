@@ -68,32 +68,32 @@ export default function DeploymentConsole({
           <div className="space-y-2">
             <button
               id="trigger-deploy-btn"
-              onClick={() => onDeploy("supabase-storage")}
+              onClick={() => onDeploy("Vercel")}
               disabled={isDeploying}
               className={`w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold text-xs rounded transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-950/20 cursor-pointer ${
                 isDeploying ? "opacity-60 cursor-not-allowed" : ""
               }`}
             >
               {isDeploying ? (
-                <><RefreshCw className="h-4 w-4 animate-spin" />Publishing…</>
+                <><RefreshCw className="h-4 w-4 animate-spin" />Deploying…</>
               ) : (
-                <><Rocket className="h-4 w-4 -rotate-45" />{isAlreadyDeployed ? "Publish New Version" : "Publish App"}</>
+                <><Rocket className="h-4 w-4 -rotate-45" />{isAlreadyDeployed ? "Deploy New Version" : "Deploy to Vercel"}</>
               )}
             </button>
 
             {isAlreadyDeployed && (
               <button
                 id="redeploy-btn"
-                onClick={() => onDeploy("supabase-storage")}
+                onClick={() => onDeploy("Vercel")}
                 disabled={isDeploying}
                 className={`w-full py-2.5 bg-emerald-700 hover:bg-emerald-600 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold text-xs rounded transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/20 cursor-pointer ${
                   isDeploying ? "opacity-60 cursor-not-allowed" : ""
                 }`}
               >
                 {isDeploying ? (
-                  <><RotateCcw className="h-4 w-4 animate-spin" />Re-publishing…</>
+                  <><RotateCcw className="h-4 w-4 animate-spin" />Re-deploying…</>
                 ) : (
-                  <><Zap className="h-4 w-4" />Re-publish (Overwrite)</>
+                  <><Zap className="h-4 w-4" />Re-deploy (Overwrite)</>
                 )}
               </button>
             )}

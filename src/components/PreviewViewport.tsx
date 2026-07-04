@@ -98,25 +98,11 @@ export default function PreviewViewport({ currentProject, onLaunchSimulator }: P
     ? currentProject.deployments[0] 
     : null;
 
-  // Standalone preview URL hosted directly on this Applet's Express server!
-  // Fallback to a self-referential deploy route or preview injector if not deployed yet
-  const livePreviewUrl = activeDeployment 
-    ? activeDeployment.liveUrl 
-    : `${window.location.origin}/deploy/preview_${currentProject.id}`;
-
   const handleOpenNewTab = () => {
-    const html = currentProject.previewHtml;
-    if (html && html.trim().length > 0) {
-      const blob = new Blob([html], { type: "text/html" });
-      const url = URL.createObjectURL(blob);
-      const win = window.open(url, "_blank");
-      // Revoke after tab opens so memory is freed
-      if (win) setTimeout(() => URL.revokeObjectURL(url), 5000);
+    if (!activeDeployment?.liveUrl) {
+      return;
     }
-  };
-
-  const handleCreateMockDeployment = () => {
-    // If not deployed yet, warn or guide them
+    window.open(activeDeployment.liveUrl, "_blank");
   };
 
   return (
@@ -160,9 +146,9 @@ export default function PreviewViewport({ currentProject, onLaunchSimulator }: P
         <div className="flex-1 max-w-xl flex items-center bg-[#16161A] border border-slate-700 rounded px-3 py-1.5 gap-2 select-none">
           <Lock className="h-3 w-3 text-emerald-400" />
           <span className="text-slate-400 text-xs font-mono truncate select-all w-full leading-none">
-            {activeDeployment 
-              ? `${activeDeployment.platform.toLowerCase()}-app-${activeDeployment.id}.vercel.app`
-              : `dev-server.cloud-run-mesh.local:3000/project/${currentProject.id}`
+            {activeDeployment?.liveUrl
+              ? activeDeployment.liveUrl
+              : "Workspace preview — deploy to get a public URL"
             }
           </span>
           <div className="flex items-center gap-1.5">

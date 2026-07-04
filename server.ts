@@ -1,9 +1,11 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { execSync } from "child_process";
 import OpenAI from "openai";
 import dotenv from "dotenv";
 import JSZip from "jszip";
+import { collectVercelDeploymentFiles } from "./src/lib/vercelUpload";
 
 dotenv.config();
 
@@ -152,11 +154,8 @@ function getUserState() {
       credits: 85,
       appCreationsCount: 1,
       deploymentsCount: 0,
-      referralCode: "SRI777",
-      referrals: [
-        { id: "ref_1", friend: "Vel G", action: "Signup", reward: 10, timestamp: "2026-06-20T08:12:00.000Z" },
-        { id: "ref_2", friend: "Selvi S", action: "Deploy App", reward: 20, timestamp: "2026-06-20T08:45:00.000Z" }
-      ],
+      referralCode: "",
+      referrals: [],
       plan: "Free",
       offerRedeemed: false,
       offerSignupTime: null,
@@ -177,7 +176,7 @@ function getUserState() {
       credits: 85,
       appCreationsCount: 1,
       deploymentsCount: 0,
-      referralCode: "SRI777",
+      referralCode: "",
       referrals: [],
       plan: "Free",
       offerRedeemed: false,
@@ -963,40 +962,6 @@ app.get("/api/api-key-status", async (req, res) => {
   });
 });
 
-// API: Simulate Referral Reward Trigger
-app.post("/api/user-state/simulate-referral", (req, res) => {
-  const { actionType } = req.body; // "signup", "deploy", "paid"
-  const state = getUserState();
-  
-  const friends = ["Manoj Kumar", "Divya Lakshmi", "Sanjay S", "Arun Prasath", "Karthika M", "Srinivasan K", "Priya R"];
-  const randomFriend = friends[Math.floor(Math.random() * friends.length)] + " (" + Math.random().toString(36).substring(2, 5).toUpperCase() + ")";
-  
-  let reward = 45; // Match "earn 45 credits for every successful signup"
-  let actionText = "Friend Signup (+45 Credits)";
-  
-  if (actionType === "deploy") {
-    reward = 20;
-    actionText = "Friend Live Deploy";
-  } else if (actionType === "paid") {
-    reward = 50;
-    actionText = "Friend Paid Plan Upgrade";
-  } else if (actionType === "signup") {
-    reward = 45;
-    actionText = "Friend Signup (+45 Credits)";
-  }
-  
-  state.credits += reward;
-  state.referrals.unshift({
-    id: "ref_" + Math.random().toString(36).substring(2, 7),
-    friend: randomFriend,
-    action: actionText,
-    reward: reward,
-    timestamp: new Date().toISOString()
-  });
-  
-  saveUserState(state);
-  res.json(state);
-});
 
 // API: Change Plan Level
 app.post("/api/user-state/change-plan", (req, res) => {
@@ -1047,11 +1012,8 @@ app.post("/api/user-state/reset", (req, res) => {
     credits: 85,
     appCreationsCount: 1,
     deploymentsCount: 0,
-    referralCode: "SRI777",
-    referrals: [
-      { id: "ref_1", friend: "Vel G", action: "Signup", reward: 10, timestamp: "2026-06-20T08:12:00.000Z" },
-      { id: "ref_2", friend: "Selvi S", action: "Deploy App", reward: 20, timestamp: "2026-06-20T08:45:00.000Z" }
-    ],
+    referralCode: "",
+    referrals: [],
     plan: "Free"
   };
   saveUserState(defaultState);
@@ -1931,90 +1893,271 @@ app.get("/api/projects/:id", (req, res) => {
   res.json(project);
 });
 
-// API: Trigger mock Deployment with authentic streaming logs
-app.post("/api/projects/:id/deploy", (req, res) => {
-  const { targetPlatform } = req.body; // e.g. "Vercel", "Netlify", "Cloudflare Pages"
+// API: Trigger real deployment to Vercel
+app.post("/api/projects/:id/deploy", async (req, res) => {
+  const projectId = req.params.id;
   const projects = getProjects();
-  const projectIndex = projects.findIndex((p: any) => p.id === req.params.id);
-  
-  if (projectIndex === -1) {
-    return res.status(404).json({ error: "Project not found" });
-  }
+  let project = projects.find((p: any) => p.id === projectId);
+  const { projectName, previewHtml, prompt } = req.body || {};
 
-  // Credit limits validation for Deployments
-  const state = getUserState();
-  const deployCost = 10;
-
-  if (state.plan === "Free") {
-    if (state.credits < deployCost) {
-      return res.status(400).json({ 
-        error: `Insufficient credits. Deploying an App costs ${deployCost} credits, but you only have ${state.credits} remaining. Copy your referral link or Sim Invite friends to add credits!` 
-      });
+  if (!project) {
+    if (!previewHtml || typeof previewHtml !== "string") {
+      return res.status(404).json({ error: "Project not found and no preview HTML was provided." });
     }
-    if (state.deploymentsCount >= 2) {
-      return res.status(400).json({ 
-        error: "Free Plan Limit: You have reached the limit of 2 free live deployments. Upgrade to Pro or Team for unlimited production hosting!" 
-      });
-    }
-  }
-
-  // Deduct credits & progress
-  if (state.plan === "Free") {
-    state.credits -= deployCost;
-    state.deploymentsCount = (state.deploymentsCount || 0) + 1;
+    project = {
+      id: projectId,
+      name: projectName || `Generated App ${projectId}`,
+      description: prompt ? `${prompt}`.slice(0, 120) : "Generated app deployed to Vercel",
+      prompt: prompt || "",
+      analysis: { features: [], database: [], apis: [], security: "" },
+      files: [],
+      previewHtml,
+      createdAt: new Date().toISOString(),
+      deployments: [],
+    };
+    projects.push(project);
   } else {
-    state.deploymentsCount = (state.deploymentsCount || 0) + 1;
+    if (previewHtml && typeof previewHtml === "string") {
+      project.previewHtml = previewHtml;
+    }
+    if (projectName) {
+      project.name = projectName;
+    }
+    if (prompt) {
+      project.prompt = prompt;
+    }
   }
-  saveUserState(state);
 
-  const project = projects[projectIndex];
-  const platform = targetPlatform || "Vercel";
+  const vercelToken = process.env.VERCEL_TOKEN?.trim();
+  const vercelProjectId = process.env.VERCEL_PROJECT_ID?.trim();
+  const vercelTeamId = process.env.VERCEL_TEAM_ID?.trim() || process.env.VERCEL_ORG_ID?.trim();
 
-  // Create a deployment record
-  const deploymentId = "dep_" + Math.random().toString(36).substring(2, 9);
-  
-  // Real hosting links pointing to this Express server
-  const liveUrl = `${req.protocol}://${req.get("host")}/deploy/${deploymentId}`;
-
-  const deployRecord = {
-    id: deploymentId,
-    platform: platform,
-    liveUrl: liveUrl,
-    status: "Success",
-    deployedAt: new Date().toISOString(),
-    logs: [
-      `[10:42:01] ⚡ Deploying to ${platform} Cloud Network...`,
-      `[10:42:02] 📦 Parsing repository layout: Next.js + React Framework setup detected.`,
-      `[10:42:03] 🔨 Installing npm dependencies from generated package.json...`,
-      `[10:42:06] 🔨 npm package tree resolved (React 19, Tailwind CSS v4, Lucide Icons).`,
-      `[10:42:07] 🔥 Precompiling database configurations: mapping Supabase drizzle connection pool.`,
-      `[10:42:08] 🚀 Compiling code bundle (production mode)...`,
-      `[10:42:09] 🛡️ [CHECK 1/5] VERIFYING BUILD SUCCESS...`,
-      `[10:42:09] 🛡️ [CHECK 1/5] PASSED: Built production bundle successfully (Static: 142KB, CJS Server: 4.2MB).`,
-      `[10:42:10] 🛡️ [CHECK 2/5] VERIFYING ALL ROUTES LOAD CORRECTLY...`,
-      `[10:42:10] 🛡️ [CHECK 2/5] PASSED: Verified '/' and '/api/v1/*' response latency: 42ms (200 OK).`,
-      `[10:42:11] 🛡️ [CHECK 3/5] VERIFYING CORE STATIC ASSETS & ICONS LOAD SUCCESS...`,
-      `[10:42:11] 🛡️ [CHECK 3/5] PASSED: All local svg, Lucide modules, and styles mapped perfectly.`,
-      `[10:42:12] 🛡️ [CHECK 4/5] VERIFYING VIEWPORT & MOBILE RESPONSIVENESS BREAKPOINTS...`,
-      `[10:42:12] 🛡️ [CHECK 4/5] PASSED: Fluid layout, flex containers, and touch-target sizes valid (>=44px).`,
-      `[10:42:13] 🛡️ [CHECK 5/5] VERIFYING CLIENT WEB CONSOLE SIGNALS (NO ERRORS)...`,
-      `[10:42:13] 🛡️ [CHECK 5/5] PASSED: Web browser console validation finished. 0 errors, 0 warnings.`,
-      `[10:42:14] 🚀 Optimizing build static routes and serverless edge functions...`,
-      `[10:42:15] 🔗 Assigning custom DNS routing: ${platform.toLowerCase()}-app-${deploymentId}.dev`,
-      `[10:42:16] ✅ Deployment SUCCESSFUL! Sri AI validation validated. Public previews live.`
-    ]
-  };
-
-  if (!project.deployments) {
-    project.deployments = [];
+  if (!vercelToken || !vercelProjectId || !vercelTeamId) {
+    return res.status(500).json({
+      error: "Missing Vercel configuration. Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID (or VERCEL_ORG_ID) in the server environment.",
+    });
   }
-  project.deployments.unshift(deployRecord);
-  saveProjects(projects);
 
-  res.json({
-    project,
-    deployment: deployRecord
-  });
+  const logs: string[] = [];
+  try {
+    logs.push("[BUILD] Starting production build verification...");
+    logs.push("[BUILD] Using actual source code for deployment.");
+
+    const projectRoot = process.cwd();
+    const packageJsonPath = path.join(projectRoot, "package.json");
+    const indexHtmlPath = path.join(projectRoot, "index.html");
+    const srcDirPath = path.join(projectRoot, "src");
+    const buildDir = path.join(projectRoot, "dist");
+
+    if (!fs.existsSync(packageJsonPath) || !fs.existsSync(indexHtmlPath) || !fs.existsSync(srcDirPath)) {
+      throw new Error("Local source code not found. Cannot deploy source code.");
+    }
+
+    logs.push(`[BUILD] Project Name: ${project.name}`);
+    logs.push(`[BUILD] Project root: ${projectRoot}`);
+
+    try {
+      execSync("corepack pnpm run build", { cwd: projectRoot, stdio: "pipe" });
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      throw new Error(`Local build failed: ${message}`);
+    }
+
+    if (!fs.existsSync(buildDir) || !fs.existsSync(path.join(buildDir, "index.html"))) {
+      throw new Error("Local build output missing dist/index.html");
+    }
+
+    const builtIndexHtml = fs.readFileSync(path.join(buildDir, "index.html"), "utf8");
+    const rootExists = builtIndexHtml.includes('id="root"') ? "root" : builtIndexHtml.includes('id="calculator-root"') ? "calculator-root" : "missing";
+    logs.push(`[BUILD] Root Element: ${rootExists}`);
+    if (rootExists !== "root") {
+      throw new Error(`Built output does not contain <div id=\"root\">. Found ${rootExists} instead.`);
+    }
+
+    logs.push("[BUILD] Build completed successfully.");
+    logs.push("[UPLOAD] Preparing built output files for Vercel deployment...");
+
+    const vercelJsonPath = path.join(process.cwd(), "vercel.json");
+    const deploymentFiles = collectVercelDeploymentFiles({ projectRoot, buildDir });
+    const uniqueFiles = deploymentFiles.files;
+
+    const totalFiles = uniqueFiles.length;
+    logs.push(`[UPLOAD] Total files prepared for upload: ${totalFiles}`);
+    logs.push(`[UPLOAD] Asset files included: ${deploymentFiles.audit.assetCount}`);
+    logs.push(`[UPLOAD] Includes assets dir: ${deploymentFiles.audit.includesAssetsDir}`);
+    logs.push(`[UPLOAD] First 50 files: ${uniqueFiles.slice(0, 50).map((f) => f.file).join(",")}`);
+    logs.push(`[UPLOAD] Deployment root: ${buildDir}`);
+    logs.push(`[UPLOAD] Built files: ${deploymentFiles.audit.first50.join(",")}`);
+
+    if (fs.existsSync(vercelJsonPath)) {
+      logs.push(`[UPLOAD] Found existing vercel.json at ${vercelJsonPath}`);
+    }
+
+    // Print server file path(s) found
+    const serverRootPath = path.join(process.cwd(), "server.ts");
+    const serverSrcPath = path.join(process.cwd(), "src", "server.ts");
+    if (fs.existsSync(serverRootPath)) logs.push(`[UPLOAD] Server file found: ${serverRootPath}`);
+    else if (fs.existsSync(serverSrcPath)) logs.push(`[UPLOAD] Server file found: ${serverSrcPath}`);
+    else logs.push(`[UPLOAD] Server file not found at ${serverRootPath} or ${serverSrcPath}`);
+
+    // Use uniqueFiles for the upload
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    // @ts-ignore
+    const uploadFiles = uniqueFiles;
+
+    const createUrl = `https://api.vercel.com/v13/deployments${vercelTeamId ? `?teamId=${encodeURIComponent(vercelTeamId)}` : ""}`;
+    const createResponse = await fetch(createUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${vercelToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: `trustme-${project.id}`,
+        target: "production",
+        project: vercelProjectId,
+        files: uploadFiles,
+      }),
+    });
+
+    const createData = await createResponse.json();
+    if (!createResponse.ok) {
+      const err = createData.error?.message || JSON.stringify(createData);
+      throw new Error(`Vercel deployment creation failed: ${err}`);
+    }
+
+    const deploymentId = createData.id;
+    const deploymentHost = createData.url;
+    if (!deploymentId || !deploymentHost) {
+      throw new Error(`Vercel deployment response missing deployment id or url. ${JSON.stringify(createData)}`);
+    }
+
+    logs.push(`[UPLOAD] Deployment created on Vercel: ${deploymentHost}`);
+    logs.push("[DEPLOY] Waiting for Vercel deployment to become READY...");
+
+    let deploymentInfo: any = createData;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const statusUrl = `https://api.vercel.com/v13/deployments/${deploymentId}${vercelTeamId ? `?teamId=${encodeURIComponent(vercelTeamId)}` : ""}`;
+      const statusResponse = await fetch(statusUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${vercelToken}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      deploymentInfo = await statusResponse.json();
+      const readyState = deploymentInfo.readyState;
+      const state = deploymentInfo.state;
+      logs.push(`[DEPLOY] Vercel status: ${readyState}${state ? ` (${state})` : ""}`);
+
+      if (readyState === "READY") {
+        break;
+      }
+      if (state === "ERROR" || readyState === "ERROR") {
+        const err = deploymentInfo.error?.message || JSON.stringify(deploymentInfo);
+        throw new Error(`Vercel deployment failed: ${err}`);
+      }
+
+      if (attempt === 39) {
+        throw new Error("Vercel deployment timed out before reaching READY status.");
+      }
+    }
+
+    const deploymentUrl = `https://${deploymentInfo.url}`;
+    logs.push(`[READY] Vercel deployment ready at ${deploymentUrl}`);
+    logs.push(`[VERIFY] Deployment URL=${deploymentUrl}`);
+    logs.push("[VERIFY] Verifying deployed URL accessibility...");
+
+    project.publishedUrl = deploymentUrl;
+
+    const acceptableStatuses = new Set([200, 301, 302]);
+    const retryDelays = [5000, 10000, 15000, 20000, 30000];
+    let verified = false;
+    let verifyStatus = 0;
+    let verifyContentType = "";
+    let verifyError = "";
+
+    for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+      try {
+        const verifyResponse = await fetch(deploymentUrl, {
+          method: "GET",
+          redirect: "manual",
+          headers: {
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          },
+        });
+
+        verifyStatus = verifyResponse.status;
+        verifyContentType = verifyResponse.headers.get("content-type") || "";
+        const accepted = acceptableStatuses.has(verifyStatus);
+        logs.push(`[VERIFY] Attempt ${attempt + 1}: HTTP status=${verifyStatus} content-type=${verifyContentType} accepted=${accepted}`);
+
+        if (accepted) {
+          verified = true;
+          break;
+        }
+      } catch (err: any) {
+        verifyError = err?.message || String(err);
+        logs.push(`[VERIFY] Attempt ${attempt + 1}: fetch error: ${verifyError}`);
+      }
+
+      if (attempt < retryDelays.length - 1) {
+        const waitMs = retryDelays[attempt];
+        logs.push(`[VERIFY] Waiting ${waitMs / 1000}s before retrying...`);
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+
+    if (!verified) {
+      throw new Error(
+        verifyError
+          ? `Deployment uploaded but URL verification failed after retries: ${verifyError}`
+          : `Deployment uploaded but URL verification failed after retries: HTTP ${verifyStatus}`
+      );
+    }
+
+    logs.push(`[VERIFY] URL verification succeeded: HTTP ${verifyStatus} verified=true`);
+
+    project.isPublished = true;
+    project.deploymentProvider = "Vercel";
+    project.deploymentStatus = "READY";
+    project.verified = true;
+    project.publishedUrl = deploymentUrl;
+    project.liveUrl = deploymentUrl;
+    project.deploymentUrl = deploymentUrl;
+    project.deployedAt = new Date().toISOString();
+    project.deployments = project.deployments || [];
+    project.deployments.unshift({
+      id: deploymentId,
+      provider: "Vercel",
+      platform: "Vercel",
+      liveUrl: deploymentUrl,
+      status: "READY",
+      deployedAt: project.deployedAt,
+      logs: [...logs],
+    });
+
+    saveProjects(projects);
+
+    return res.json({
+      success: true,
+      deploymentUrl,
+      liveUrl: deploymentUrl,
+      publishedUrl: deploymentUrl,
+      verified: true,
+      logs,
+      deployment: project.deployments[0],
+    });
+  } catch (error: any) {
+    const errMsg = error?.message || "Unknown Vercel deployment error.";
+    logs.push(`❌ ${errMsg}`);
+    return res.status(500).json({
+      error: errMsg,
+      logs,
+    });
+  }
 });
 
 // Route: Serve Standalone Deployed Sites

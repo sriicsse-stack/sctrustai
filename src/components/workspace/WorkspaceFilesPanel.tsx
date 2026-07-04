@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Files, Image as ImageIcon, FileText, Code2, Archive,
   Search, X, Eye, Loader2, CheckCircle2,

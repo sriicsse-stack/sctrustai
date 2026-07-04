@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Monitor, Tablet, Smartphone, RotateCw, ExternalLink,
   Loader2, Globe, CheckCircle2, AlertCircle, Wrench,

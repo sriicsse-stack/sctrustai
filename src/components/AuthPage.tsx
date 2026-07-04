@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, ShieldCheck, ArrowRight, Lock, Mail, Users, Zap } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { readJsonResponse } from "../lib/apiResponse";
@@ -27,7 +27,7 @@ type UserState = {
 
 type AuthPageProps = {
   setUserState: React.Dispatch<React.SetStateAction<UserState>>;
-  setActiveGlobalTab: React.Dispatch<React.SetStateAction<string>>;
+  setActiveGlobalTab: React.Dispatch<React.SetStateAction<"workspace" | "sri-ai" | "pricing" | "referral" | "admin" | "marketplace" | "dashboard">>;
 };
 
 const mapSupabaseSessionToUser = (session: any): UserInfo | null => {

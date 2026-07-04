@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Zap, Eye, Code2, History, Rocket, RefreshCw, CheckCircle2,
   Globe, Copy, ExternalLink, X, Upload, AlertTriangle, Loader2, XCircle

@@ -1,4 +1,4 @@
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Zap, X, AlertTriangle, ArrowRight, Sparkles, Clock, Layers } from "lucide-react";
 import type { CreditEstimate } from "../../lib/creditCost";
 

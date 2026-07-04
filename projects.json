@@ -1,7 +1,7 @@
 [
   {
     "id": "proj_gin1arl",
-    "prompt": "Build a naruto theme calculator ",
+    "prompt": "deploy actual source",
     "files": [
       {
         "path": "app/page.tsx",
@@ -34,6 +34,81 @@
       }
     },
     "createdAt": "2026-06-28T19:19:40.956Z",
-    "deployments": []
+    "deployments": [
+      {
+        "id": "dpl_Gm4F3GzJuWaFUnCo2ZggqWVkH3Wv",
+        "provider": "Vercel",
+        "platform": "Vercel",
+        "liveUrl": "https://sctrustai-buldtge3v-sri-s-projectscs.vercel.app",
+        "status": "READY",
+        "deployedAt": "2026-07-04T14:56:32.651Z",
+        "logs": [
+          "[BUILD] Starting production build verification...",
+          "[BUILD] Build completed successfully.",
+          "[UPLOAD] Preparing files for Vercel deployment...",
+          "[UPLOAD] Total files prepared for upload: 41",
+          "[UPLOAD] First 50 files: index.html,vercel.json,package.json,pnpm-lock.yaml,vite.config.ts,src/App.tsx,src/index.css,src/main.tsx,src/types.ts,src/vite-env.d.ts,src/lib/apiResponse.ts,src/lib/creditCost.ts,src/lib/supabaseClient.ts,src/db/supabase.ts,src/components/AdminVerificationDashboard.tsx,src/components/AuthPage.tsx,src/components/CodeExplorer.tsx,src/components/DashboardPage.tsx,src/components/DeploymentConsole.tsx,src/components/Header.tsx,src/components/MarketplacePage.tsx,src/components/PreviewViewport.tsx,src/components/PricingPage.tsx,src/components/ProjectHistory.tsx,src/components/PromptPanel.tsx,src/components/ReferralAdminPanel.tsx,src/components/ReferralEarnView.tsx,src/components/StudentApprovedScreen.tsx,src/components/StudentBanner.tsx,src/components/StudentVerificationModal.tsx,src/components/workspace/AIAssistantPanel.tsx,src/components/workspace/AIWorkspaceLayout.tsx,src/components/workspace/ChangesPanel.tsx,src/components/workspace/CreditConfirmModal.tsx,src/components/workspace/LivePreviewPanel.tsx,src/components/workspace/WorkspaceFilesPanel.tsx,src/components/workspace/WorkspaceTopBar.tsx,src/assets/images/new_founder_avatar_1782054487936.jpg,public/assets/founder.png,server.ts,tsconfig.json",
+          "[UPLOAD] Server file found: C:\\Users\\sri\\Downloads\\trustme-ai-builder-source1\\server.ts",
+          "[UPLOAD] Deployment created on Vercel: sctrustai-buldtge3v-sri-s-projectscs.vercel.app",
+          "[DEPLOY] Waiting for Vercel deployment to become READY...",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: READY",
+          "[READY] Vercel deployment ready at https://sctrustai-buldtge3v-sri-s-projectscs.vercel.app",
+          "[VERIFY] Deployment URL=https://sctrustai-buldtge3v-sri-s-projectscs.vercel.app",
+          "[VERIFY] Verifying deployed URL accessibility...",
+          "[VERIFY] Attempt 1: HTTP status=302 content-type=text/html accepted=true",
+          "[VERIFY] URL verification succeeded: HTTP 302 verified=true"
+        ]
+      },
+      {
+        "id": "dpl_3TUxYxHqjjtpHtdP3i8An5MxVXMS",
+        "provider": "Vercel",
+        "platform": "Vercel",
+        "liveUrl": "https://sctrustai-onmo033kg-sri-s-projectscs.vercel.app",
+        "status": "READY",
+        "deployedAt": "2026-07-04T14:35:11.817Z",
+        "logs": [
+          "[BUILD] Starting production build verification...",
+          "[BUILD] Build completed successfully.",
+          "[UPLOAD] Preparing files for Vercel deployment...",
+          "[UPLOAD] Total files prepared for upload: 41",
+          "[UPLOAD] First 50 files: index.html,vercel.json,package.json,pnpm-lock.yaml,vite.config.ts,src/App.tsx,src/index.css,src/main.tsx,src/types.ts,src/vite-env.d.ts,src/lib/apiResponse.ts,src/lib/creditCost.ts,src/lib/supabaseClient.ts,src/db/supabase.ts,src/components/AdminVerificationDashboard.tsx,src/components/AuthPage.tsx,src/components/CodeExplorer.tsx,src/components/DashboardPage.tsx,src/components/DeploymentConsole.tsx,src/components/Header.tsx,src/components/MarketplacePage.tsx,src/components/PreviewViewport.tsx,src/components/PricingPage.tsx,src/components/ProjectHistory.tsx,src/components/PromptPanel.tsx,src/components/ReferralAdminPanel.tsx,src/components/ReferralEarnView.tsx,src/components/StudentApprovedScreen.tsx,src/components/StudentBanner.tsx,src/components/StudentVerificationModal.tsx,src/components/workspace/AIAssistantPanel.tsx,src/components/workspace/AIWorkspaceLayout.tsx,src/components/workspace/ChangesPanel.tsx,src/components/workspace/CreditConfirmModal.tsx,src/components/workspace/LivePreviewPanel.tsx,src/components/workspace/WorkspaceFilesPanel.tsx,src/components/workspace/WorkspaceTopBar.tsx,src/assets/images/new_founder_avatar_1782054487936.jpg,public/assets/founder.png,server.ts,tsconfig.json",
+          "[UPLOAD] Server file found: C:\\Users\\sri\\Downloads\\trustme-ai-builder-source1\\server.ts",
+          "[UPLOAD] Deployment created on Vercel: sctrustai-onmo033kg-sri-s-projectscs.vercel.app",
+          "[DEPLOY] Waiting for Vercel deployment to become READY...",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: BUILDING",
+          "[DEPLOY] Vercel status: READY",
+          "[READY] Vercel deployment ready at https://sctrustai-onmo033kg-sri-s-projectscs.vercel.app",
+          "[VERIFY] Deployment URL=https://sctrustai-onmo033kg-sri-s-projectscs.vercel.app",
+          "[VERIFY] Verifying deployed URL accessibility...",
+          "[VERIFY] Attempt 1: HTTP status=302 content-type=text/html accepted=true",
+          "[VERIFY] URL verification succeeded: HTTP 302 verified=true"
+        ]
+      }
+    ],
+    "publishedUrl": "https://sctrustai-buldtge3v-sri-s-projectscs.vercel.app",
+    "isPublished": true,
+    "deploymentProvider": "Vercel",
+    "deploymentStatus": "READY",
+    "verified": true,
+    "liveUrl": "https://sctrustai-buldtge3v-sri-s-projectscs.vercel.app",
+    "deploymentUrl": "https://sctrustai-buldtge3v-sri-s-projectscs.vercel.app",
+    "deployedAt": "2026-07-04T14:56:32.651Z",
+    "name": "TrustMeAI Builder"
   }
 ]

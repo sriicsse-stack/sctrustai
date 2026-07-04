@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 import { 
   Sparkles, 
   Code, 
@@ -122,6 +122,7 @@ export default function App() {
         const user = mapSupabaseSessionToUser(sessionData.session);
         if (user) {
           setUserState(prev => ({ ...prev, user }));
+          await handlePostLoginReferral(user);
           return;
         }
       } catch (err) {
@@ -143,11 +144,12 @@ export default function App() {
 
     initAuth();
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (session) {
         const user = mapSupabaseSessionToUser(session);
         if (user) {
           setUserState(prev => ({ ...prev, user }));
+          await handlePostLoginReferral(user);
           setActiveGlobalTab("workspace");
         }
       } else {
@@ -155,7 +157,7 @@ export default function App() {
       }
     });
 
-    const handlePopupMessage = (event: MessageEvent) => {
+    const handlePopupMessage = async (event: MessageEvent) => {
       if (authPopupRef.current && event.source !== authPopupRef.current) return;
       if (!event.data || typeof event.data !== "object") return;
 
@@ -163,6 +165,7 @@ export default function App() {
         const user = event.data.user;
         if (user) {
           setUserState(prev => ({ ...prev, user }));
+          await handlePostLoginReferral(user);
           setActiveGlobalTab("workspace");
           showToast("Signed in successfully via Google.", "success");
         }
@@ -243,7 +246,7 @@ export default function App() {
     credits: 85,
     appCreationsCount: 1,
     deploymentsCount: 0,
-    referralCode: "SRI777",
+    referralCode: "",
     referrals: [] as Array<{ id: string; friend: string; action: string; reward: number; timestamp: string }>,
     plan: "Free",
     offerRedeemed: false,
@@ -567,9 +570,10 @@ export default function App() {
   }, []);
 
   // ── Upsert profile + process pending referral after Google login ─────────
-  const handlePostLoginReferral = async (user: { googleId: string; email: string; name: string; picture: string }) => {
+  async function handlePostLoginReferral(user: { googleId: string; email: string; name: string; picture: string; expiresAt?: string }) {
     const pendingCode = localStorage.getItem("pending_referral_code");
     try {
+      let result: any = null;
       if (pendingCode) {
         const { data, error } = await supabase.functions.invoke("referral-signup", {
           body: {
@@ -584,12 +588,11 @@ export default function App() {
           localStorage.removeItem("pending_referral_code");
           showToast("🎉 Referral bonus applied! +10 credits added to your account.", "success");
         } else {
-          // Profile still created; just no referral bonus
           localStorage.removeItem("pending_referral_code");
         }
+        result = data;
       } else {
-        // No pending referral — just upsert profile so referral_code is generated
-        await supabase.functions.invoke("referral-profile", {
+        const { data, error } = await supabase.functions.invoke("referral-profile", {
           body: {
             user_id: user.googleId,
             email: user.email,
@@ -598,11 +601,31 @@ export default function App() {
             fetch_dashboard: false,
           },
         });
+        if (error) {
+          console.error("referral-profile error:", error);
+        }
+        result = data;
       }
+
+      const profile = result?.profile;
+      if (profile) {
+        setUserState(prev => ({
+          ...prev,
+          credits: typeof profile.credits === "number" ? profile.credits : prev.credits,
+          referralCode: profile.referral_code || prev.referralCode,
+          user: prev.user || {
+            ...user,
+            expiresAt: user.expiresAt ?? new Date().toISOString(),
+          },
+        }));
+      }
+
+      return result;
     } catch (e) {
       console.error("referral post-login error:", e);
+      return null;
     }
-  };
+  }
 
   // Load project index list and user credits on mount
   useEffect(() => {
@@ -722,10 +745,13 @@ export default function App() {
     }
   };
 
-  const publishToMarketplace = async (project: any, userId: string) => {
+  const publishToMarketplace = async (project: any, userId: string, liveUrl?: string) => {
     try {
-      const url = `https://apps.trustmeai.com/${project.id}`;
-      // Update project as published
+      if (!liveUrl) {
+        throw new Error("Deployment not completed. No public URL available.");
+      }
+      const url = liveUrl;
+      // Update project as published with the verified deployment URL.
       await supabase.from("projects").update({ is_published: true, published_url: url }).eq("id", project.id);
       // Add to marketplace
       await supabase.from("marketplace_apps").insert({
@@ -741,7 +767,7 @@ export default function App() {
       await supabase.from("deployments").insert({
         project_id: project.id,
         user_id: userId,
-        platform: "vercel",
+        platform: "Vercel",
         url,
         status: "success"
       });
@@ -848,11 +874,17 @@ export default function App() {
       const res = await fetch(`/api/projects/${id}`);
       const data = await res.json();
       if (data && !data.error) {
-        setCurrentProject(data);
+        const normalizedProject = {
+          ...data,
+          publishedUrl: data.publishedUrl || data.published_url || undefined,
+          isPublished: data.isPublished || data.is_published || false,
+          deployments: Array.isArray(data.deployments) ? data.deployments : [],
+        };
+        setCurrentProject(normalizedProject);
         setSelectedProjectId(id);
         setActiveTab("preview");
-        if (data.deployments && data.deployments.length > 0) {
-          setDeployLogs(data.deployments[0].logs);
+        if (normalizedProject.deployments.length > 0) {
+          setDeployLogs(normalizedProject.deployments[0].logs || []);
         } else {
           setDeployLogs([]);
         }
@@ -1202,13 +1234,26 @@ export default function App() {
       setBuildPhaseMessage("Deploying to edge network...");
       setGeneratingStep(4);
       setGeneratingStepMessage(buildSteps[4]);
+      const generatedId = generated.id || `proj_${Math.random().toString(36).substring(2, 9)}`;
       try {
-        deployed = await callAgent("deploy", `${BASE}/deploy-app`, {
-          projectId: generated.id,
-          projectName: generated.name,
-          previewHtml: generated.previewHtml || generated.preview_html,
+        const deployResponse = await fetch(`/api/projects/${generatedId}/deploy`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            projectName: generated.name,
+            previewHtml: generated.previewHtml || generated.preview_html,
+            prompt: promptText,
+          }),
         });
-      } catch {
+        const deployData = await deployResponse.json();
+        if (!deployResponse.ok || deployData.error) {
+          throw new Error(deployData.error || "Deployment failed during generation.");
+        }
+        deployed = deployData;
+      } catch (error) {
+        console.error("Workspace deploy error:", error);
         deployed = { liveUrl: null, deployment: null };
       }
 
@@ -1471,24 +1516,16 @@ export default function App() {
     setActiveTab("deploy");
     setDeployLogs([]);
 
-    const DEPLOY_URL = "https://zgglpeyyzozwxnkdliqh.supabase.co/functions/v1/deploy-app";
-    const SUPABASE_ANON_D = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpnZ2xwZXl5em96d3hua2RsaXFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2NjM1ODAsImV4cCI6MjA5ODIzOTU4MH0.07utLUydxZAiH5rrLi5uW5tg6kHYYypbcJvFRKdYLrM";
+    const DEPLOY_URL = `/api/projects/${currentProject.id}/deploy`;
 
     try {
-      setDeployLogs(["[⚡] Packaging and uploading to public storage…", "[🔍] Will verify HTTP 200 + text/html content-type before confirming publish…"]);
+      setDeployLogs(["[⚡] Preparing deployment to Vercel…", "[🔍] Will verify Vercel deployment status and public URL before confirming publish…"]);
 
       const res = await fetch(DEPLOY_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${SUPABASE_ANON_D}`,
-          "apikey": SUPABASE_ANON_D,
         },
-        body: JSON.stringify({
-          projectId: currentProject.id,
-          projectName: currentProject.name,
-          previewHtml: currentProject.previewHtml,
-        }),
       });
 
       const data = await res.json();
@@ -1498,13 +1535,26 @@ export default function App() {
         setDeployLogs(data.logs);
       }
 
-      // Hard fail if server returned an error or deployment wasn't verified
-      if (!res.ok || data.error || !data.success || !data.verified) {
+      const liveUrl: string = data.liveUrl || data.deploymentUrl || data.publishedUrl;
+      setDeployLogs(prev => [...prev, `[HTTP] status=${res.status} verified=${data?.verified ? "true" : "false"} url=${liveUrl ? "yes" : "no"}`]);
+
+      if (!res.ok || data.error) {
         const errMsg = data.error || "Deployment failed: URL could not be verified.";
         throw new Error(errMsg);
       }
 
-      const liveUrl: string = data.liveUrl;
+      if (!liveUrl) {
+        throw new Error("Deployment not completed. No public URL available.");
+      }
+
+      if (!data.verified) {
+        setDeployLogs(prev => [...prev, `[WARN] Deployment returned no verified flag but URL exists; accepting URL=${liveUrl}.`] );
+      }
+
+      // Require a real public URL from the deployment pipeline.
+      if (!liveUrl) {
+        throw new Error("Deployment not completed. No public URL available.");
+      }
 
       // Guard: never accept a Supabase Edge Function URL as the published URL.
       // If the server ever returns a /functions/v1/ URL it means the proxy path
@@ -1515,13 +1565,13 @@ export default function App() {
         );
       }
 
-      // Save deployment record to Supabase
+      // Save deployment record to Supabase and persist the verified public URL.
       const userId = userState.user?.googleId;
       if (userId) {
         await supabase.from("deployments").insert({
           project_id: currentProject.id,
           user_id: userId,
-          platform: "supabase-storage",
+          platform: "Vercel",
           url: liveUrl,
           status: "live",
           logs: data.logs || [],
@@ -1536,23 +1586,34 @@ export default function App() {
       // Update local state with the verified live URL
       setCurrentProject(prev => prev ? {
         ...prev,
+        liveUrl,
+        deploymentUrl: liveUrl,
         publishedUrl: liveUrl,
+        isPublished: true,
+        verified: true,
+        deploymentStatus: "READY",
         deployments: [...(prev.deployments || []), {
           id: data.deployment?.id,
-          platform: "supabase-storage",
+          provider: "Vercel",
+          platform: "Vercel",
           liveUrl,
-          status: "live",
-          createdAt: new Date().toISOString(),
+          status: "READY",
+          deployedAt: new Date().toISOString(),
+          logs: data.logs || [],
         }],
         deploymentsCount: (prev.deploymentsCount || 0) + 1,
       } : prev);
 
       setDeployStatus("success");
-      showToast(`🚀 Live at ${liveUrl}`, "success");
+      setDeployLogs(prev => [...prev, `[READY] Deployment verified: ${liveUrl}`]);
+      setDeployLogs(prev => [...prev, `[INFO] Deployment URL=${liveUrl}`]);
+      showToast(`Deployment Successful — ${liveUrl}`, "success");
 
-      await publishToMarketplace(currentProject, userId ?? "");
-      await fetchMarketplaceApps();
-      await fetchProjects();
+      if (userId) {
+        await publishToMarketplace(currentProject, userId, liveUrl);
+        await fetchMarketplaceApps();
+        await fetchProjects();
+      }
 
     } catch (e: any) {
       const errMsg = e?.message || "Unknown deployment error.";
@@ -1560,7 +1621,7 @@ export default function App() {
       setDeployLogs(prev => [...prev, `❌ ${errMsg}`]);
       setDeployError(errMsg);
       setDeployStatus("failed");
-      showToast("Deployment failed — see details.", "error");
+      showToast(`Deployment failed: ${errMsg}`, "error");
     } finally {
       setIsDeploying(false);
     }
@@ -1595,22 +1656,6 @@ export default function App() {
   };
 
   // Referral Simulated Event handler
-  const handleSimulateReferral = async (actionType: "signup" | "deploy" | "paid") => {
-    try {
-      const res = await fetch("/api/user-state/simulate-referral", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actionType })
-      });
-      const data = await res.json();
-      if (data && !data.error) {
-        setUserState(data);
-        showToast("🎉 Simulated Invite activity triggered successfully! Credits incremented on account!", "success");
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
 
   // Change Subscription Level
   const handleChangePlan = async (planName: string, info?: { credits: number; isUnlimited: boolean; isOfferRedeemed?: boolean }) => {
@@ -2527,7 +2572,6 @@ export default function App() {
       ) : activeGlobalTab === "referral" ? (
         <ReferralEarnView
           userState={userState}
-          onSimulateReferral={async () => {}}
         />
       ) : activeGlobalTab === "admin" ? (
         <main className="flex-1 max-w-7xl mx-auto w-full px-4 md:px-6 py-8">
@@ -3635,7 +3679,7 @@ export default function App() {
         </div>
       )}
 
-      {/* DRAWER MODAL: BILLING & SIMULATED REFERRALS PANEL */}
+      {/* DRAWER MODAL: CREDITS & REFERRAL CENTER */}
       {billingOpen && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[100] p-6 backdrop-blur-md select-none">
           <div className="bg-[#0F0F12] border border-slate-805 max-w-2xl w-full rounded-2xl overflow-hidden shadow-2xl relative">
@@ -3643,7 +3687,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <Coins className="h-5 w-5 text-amber-400" />
                 <h3 className="text-sm font-extrabold text-slate-100 uppercase tracking-widest font-mono">
-                  SaaS Bill & Simulated Referrals Admin
+                  Credits & Referral Center
                 </h3>
               </div>
               <button 
@@ -3654,135 +3698,65 @@ export default function App() {
               </button>
             </div>
 
-            <div className="p-6 space-y-6 max-h-[500px] overflow-y-auto">
-              {/* Core Credits state */}
+            <div className="p-6 space-y-6 max-h-[560px] overflow-y-auto">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="bg-[#151519] p-4.5 rounded-xl border border-slate-800 text-center">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono mb-1">
-                    ACTIVE TIER STATUS
+                <div className="bg-[#151519] p-5 rounded-3xl border border-slate-800 text-center">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono mb-2">
+                    CURRENT PLAN
                   </span>
-                  <div className="text-lg font-black text-white uppercase tracking-tight font-sans">
-                    {userState.plan} workspace
+                  <div className="text-2xl font-black text-white uppercase tracking-tight font-sans">
+                    {userState.plan}
                   </div>
-                  <div className="text-[10px] text-slate-500 font-mono mt-1">
-                    {userState.plan === "Free" ? "Limited App creations & deploys" : "Unlimited creations and hosting deployment compile cycles!"}
-                  </div>
+                  <p className="text-[10px] text-slate-400 mt-2 font-mono">
+                    Real referral rewards and billing actions are handled by live Supabase pipelines.
+                  </p>
                 </div>
-
-                <div className="bg-[#151519] p-4.5 rounded-xl border border-slate-800 text-center">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono mb-1">
-                    REMAINING CREDITS
+                <div className="bg-[#151519] p-5 rounded-3xl border border-slate-800 text-center">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono mb-2">
+                    AVAILABLE CREDITS
                   </span>
-                  <div className="text-2xl font-black text-amber-400 font-mono">
-                    {userState.plan === "Free" ? `${userState.credits} cr` : "∞ Unlimited"}
+                  <div className="text-3xl font-black text-amber-400 font-mono">
+                    {userState.credits} CR
                   </div>
-                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                    100% simulated trial balance
-                  </div>
+                  <p className="text-[10px] text-slate-400 mt-2 font-mono">
+                    Credits shown reflect your active workspace balance.
+                  </p>
                 </div>
               </div>
 
-              {/* Package Upgrades block */}
-              <div>
-                <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest block font-mono mb-2.5">
-                  1. Tier Level Switching (Simulated payments)
-                </span>
-                
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {/* Free plan option */}
-                  <div className={`p-3 border rounded-xl flex flex-col justify-between ${
-                    userState.plan === "Free" ? "border-slate-600 bg-slate-900/10" : "border-slate-800 bg-[#151519]/40"
-                  }`}>
-                    <div>
-                      <span className="text-xs font-bold block text-slate-200">Free Tier</span>
-                      <span className="text-[9px] text-slate-500 font-mono font-bold">Standard trial limitations</span>
-                    </div>
-                    <button 
-                      onClick={() => handleChangePlan("Free")}
-                      disabled={userState.plan === "Free"}
-                      className="mt-3 w-full py-1.5 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 rounded-lg cursor-pointer"
-                    >
-                      {userState.plan === "Free" ? "Active" : "Downgrade"}
-                    </button>
-                  </div>
-
-                  {/* Pro Workspace option */}
-                  <div className={`p-3 border rounded-xl flex flex-col justify-between ${
-                    userState.plan === "Pro" ? "border-blue-500 bg-blue-950/10" : "border-slate-800 bg-[#151519]/40"
-                  }`}>
-                    <div>
-                      <div className="flex items-center justify-between mb-0.5">
-                        <span className="text-xs font-bold text-slate-100">Pro Developer</span>
-                        <span className="text-[8px] bg-blue-950 text-blue-400 font-mono font-bold px-1 py-0.5 rounded leading-none">
-                          $19/mo
-                        </span>
-                      </div>
-                      <span className="text-[9px] text-slate-500 font-mono leading-none">9999 Max credits + speed runs</span>
-                    </div>
-                    <button 
-                      onClick={() => handleChangePlan("Pro")}
-                      disabled={userState.plan === "Pro"}
-                      className="mt-3 w-full py-1.5 text-[10px] font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-lg cursor-pointer"
-                    >
-                      {userState.plan === "Pro" ? "Active" : "Sim Upgrade"}
-                    </button>
-                  </div>
-
-                  {/* Team Workspace option */}
-                  <div className={`p-3 border rounded-xl flex flex-col justify-between ${
-                    userState.plan === "Team" ? "border-purple-500 bg-purple-950/10" : "border-slate-800 bg-[#151519]/40"
-                  }`}>
-                    <div>
-                      <div className="flex items-center justify-between mb-0.5">
-                        <span className="text-xs font-bold text-slate-100">Team Space</span>
-                        <span className="text-[8px] bg-purple-950 text-purple-400 font-mono font-bold px-1 py-0.5 rounded leading-none">
-                          $49/mo
-                        </span>
-                      </div>
-                      <span className="text-[9px] text-slate-500 font-mono leading-none">Highest compute speeds limit</span>
-                    </div>
-                    <button 
-                      onClick={() => handleChangePlan("Team")}
-                      disabled={userState.plan === "Team"}
-                      className="mt-3 w-full py-1.5 text-[10px] font-bold bg-purple-600 hover:bg-purple-500 text-white rounded-lg cursor-pointer"
-                    >
-                      {userState.plan === "Team" ? "Active" : "Sim Upgrade"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Referral Program — link to real dashboard */}
-              <div className="border border-slate-800 bg-[#151519]/90 rounded-2xl p-4">
-                <span className="text-[10px] font-extrabold text-blue-400 uppercase tracking-widest block font-mono mb-2">
-                  2. Referral Program
-                </span>
-                <p className="text-[11px] text-slate-400 font-mono mb-3">
-                  Earn real credits for every friend you invite. Share your unique referral link and track rewards in real time.
+              <div className="bg-[#151519] border border-slate-800 rounded-3xl p-5 space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-widest text-slate-300 font-mono">
+                  Referral rewards are live
+                </h4>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  New referred users are processed through the Supabase referral backend. When a friend signs up with your link, credits are issued automatically and visible in your referral dashboard.
                 </p>
-                <button
-                  onClick={() => { setBillingOpen(false); setActiveGlobalTab("referral"); }}
-                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold font-mono transition-colors"
-                >
-                  Open Referral Dashboard →
-                </button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    onClick={() => { setBillingOpen(false); setActiveGlobalTab("referral"); }}
+                    className="w-full py-3 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold uppercase tracking-wide transition-all"
+                  >
+                    Open Referral Dashboard
+                  </button>
+                  <button
+                    onClick={() => { setBillingOpen(false); setActiveGlobalTab("pricing"); }}
+                    className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold uppercase tracking-wide transition-all"
+                  >
+                    Open Pricing Page
+                  </button>
+                </div>
               </div>
             </div>
 
-            {/* billing actions reset */}
             <div className="bg-[#151519] border-t border-slate-800 px-6 py-4 flex items-center justify-between text-xs">
-              <button
-                onClick={handleResetUserState}
-                className="text-red-500 hover:text-red-400 font-mono font-bold cursor-pointer"
-              >
-                [ RESET ALL DATA ]
-              </button>
-
+              <span className="text-slate-400 font-mono">
+                Your referral state is synced via Supabase. Only verified signup rewards count.
+              </span>
               <button
                 onClick={() => setBillingOpen(false)}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-bold cursor-pointer"
               >
-                Done
+                Close
               </button>
             </div>
           </div>

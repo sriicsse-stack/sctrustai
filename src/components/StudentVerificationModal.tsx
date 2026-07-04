@@ -1,5 +1,5 @@
 import React, { useState, useRef } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 import { X, Loader2, GraduationCap, AlertCircle, XCircle } from "lucide-react";
 import { supabase, StudentVerification } from "../lib/supabaseClient";
 

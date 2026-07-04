@@ -55,7 +55,6 @@ interface ReferralEarnViewProps {
     referrals: Array<{ id: string; friend: string; action: string; reward: number; timestamp: string }>;
     user: any;
   };
-  onSimulateReferral: (actionType: "signup" | "deploy" | "paid") => Promise<void>;
 }
 
 const BASE_URL = "https://trustmeai.com";

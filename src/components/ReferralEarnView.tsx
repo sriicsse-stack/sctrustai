@@ -45,6 +45,7 @@ interface ProfileData {
   email: string;
   credits: number;
   referral_code: string;
+  referral_link?: string;
 }
 
 interface ReferralEarnViewProps {
@@ -93,6 +94,12 @@ export default function ReferralEarnView({ userState }: ReferralEarnViewProps) {
     if (!user?.googleId) return;
     setLoading(true);
     try {
+      // DEBUG: Log environment and client initialization
+      console.log("[ReferralEarnView] SUPABASE URL:", import.meta.env.VITE_SUPABASE_URL);
+      console.log("[ReferralEarnView] ANON KEY EXISTS:", !!import.meta.env.VITE_SUPABASE_ANON_KEY);
+      console.log("[ReferralEarnView] User ID:", user.googleId);
+      console.log("[ReferralEarnView] Invoking referral-profile with fetch_dashboard=true");
+      
       const { data, error } = await supabase.functions.invoke("referral-profile", {
         body: {
           user_id: user.googleId,
@@ -102,6 +109,7 @@ export default function ReferralEarnView({ userState }: ReferralEarnViewProps) {
           fetch_dashboard: true,
         },
       });
+      
       if (error) {
         let msg = error?.message || String(error);
         if (error?.context?.text && typeof error.context.text === 'function') {
@@ -110,8 +118,11 @@ export default function ReferralEarnView({ userState }: ReferralEarnViewProps) {
           msg = error.context.text;
         }
         console.error("[ReferralEarnView] referral-profile error:", msg);
+        console.error("[ReferralEarnView] Full error object:", error);
         return;
       }
+      
+      console.log("[ReferralEarnView] Response data:", data);
       if (data?.dashboard) {
         setProfile(data.dashboard.profile);
         setReferrals(data.dashboard.referrals ?? []);

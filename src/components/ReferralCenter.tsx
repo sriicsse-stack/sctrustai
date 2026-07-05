@@ -40,15 +40,23 @@ export default function ReferralCenter() {
     try {
       const user = (await (await fetch('/api/user-state')).json()).user;
       if (!user) return;
-      const { data, error } = await (window as any).supabase.functions.invoke('referral-profile', {
+      console.log("[ReferralCenter] Generating referral for:", user.googleId);
+      const { data, error } = await supabase.functions.invoke('referral-profile', {
         body: { user_id: user.googleId, email: user.email, name: user.name, picture: user.picture, fetch_dashboard: false, auto_create_referral: true }
       });
-      if (!error && data) {
+      if (error) {
+        console.error("[ReferralCenter] Referral generation error:", error);
+        return;
+      }
+      if (data) {
         const prof = data.profile ?? data.dashboard?.profile;
-        if (prof) setReferral(prof);
+        if (prof) {
+          console.log("[ReferralCenter] Generated referral:", prof);
+          setReferral(prof);
+        }
       }
     } catch (e) {
-      console.warn('Generate referral failed', e);
+      console.error('[ReferralCenter] Generate referral exception:', e);
     }
   };
 

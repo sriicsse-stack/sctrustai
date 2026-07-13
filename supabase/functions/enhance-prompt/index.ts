@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
           { role: "system", content: ENHANCE_SYSTEM },
           { role: "user", content: prompt.trim() },
         ],
-        max_tokens: 300,
+        max_tokens: 500,
         temperature: 0.7,
         stream: false,
       }),

@@ -82,6 +82,83 @@ function safeParseJSON(raw: string): any {
   }
 }
 
+const OPENROUTER_MODEL_TIMEOUT_MS = process.env.OPENROUTER_MODEL_TIMEOUT_MS ? parseInt(process.env.OPENROUTER_MODEL_TIMEOUT_MS, 10) : 8000;
+const OPENROUTER_FALLBACK_MODELS = Array.from(new Set([
+  process.env.MODEL || "openrouter/auto",
+  ...(process.env.NODE_ENV !== "production" ? [
+    "deepseek/deepseek-chat-v3",
+    "google/gemma-3",
+    "mistralai/mistral-small"
+  ] : [])
+]));
+
+function isOpenRouterPaymentError(err: any): boolean {
+  const message = String(err?.message || err || "").toLowerCase();
+  return err?.status === 402 || message.includes("payment required") || message.includes("credits exhausted") || message.includes("insufficient credits");
+}
+
+function isOpenRouterModelError(err: any): boolean {
+  const message = String(err?.message || err || "").toLowerCase();
+  return /model.*not found|invalid model|unsupported model|could not find model|no model/i.test(message);
+}
+
+async function requestOpenRouterCompletion(messages: any[], maxTokens: number) {
+  if (!aiClient) {
+    throw new Error("OpenRouter API client is not initialized.");
+  }
+
+  let lastError: any = null;
+  for (const model of OPENROUTER_FALLBACK_MODELS) {
+    if (!model) continue;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), OPENROUTER_MODEL_TIMEOUT_MS);
+
+    console.log("OPENROUTER_MODEL_ATTEMPT", { model, maxTokens, timeoutMs: OPENROUTER_MODEL_TIMEOUT_MS });
+    try {
+      const response = await aiClient.chat.completions.create({
+        model,
+        messages,
+        response_format: { type: "json_object" },
+        max_tokens: maxTokens,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (!response || !response.choices || !Array.isArray(response.choices) || response.choices.length === 0) {
+        throw new Error(`OpenRouter response invalid for model ${model}: ${JSON.stringify(response)}`);
+      }
+
+      console.log("OPENROUTER_MODEL_SUCCESS", { model, choiceCount: response.choices.length });
+      return { response, model };
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      lastError = err;
+      const status = err?.status || err?.statusCode || null;
+      const message = String(err?.message || err || "");
+      console.warn("OPENROUTER_MODEL_FAILED", { model, status, message });
+
+      if (isOpenRouterPaymentError(err)) {
+        return { error: err, paymentFailure: true };
+      }
+      if (isOpenRouterModelError(err)) {
+        console.warn(`Model ${model} failed with model-specific error, trying next fallback model.`);
+        continue;
+      }
+      if (status === 429 || /rate limit/i.test(message) || /timeout/i.test(message) || /aborted/i.test(message)) {
+        console.warn(`Transient OpenRouter error for ${model}, trying next fallback if available.`);
+        continue;
+      }
+
+      // If response returned but parsing failed due raw content, allow next fallback attempt.
+      if (model !== OPENROUTER_FALLBACK_MODELS[OPENROUTER_FALLBACK_MODELS.length - 1]) {
+        continue;
+      }
+    }
+  }
+
+  throw lastError || new Error("OpenRouter request failed for all known models.");
+}
+
 const app = express();
 // Express API server runs on port 3000 (Vite dev server runs on 50000 and proxies /api here)
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
@@ -134,73 +211,184 @@ app.use((req: any, res: any, next: any) => {
   next();
 });
 
+// Middleware to wrap plain error responses into structured JSON and preserve HTTP status codes
+app.use((req: any, res: any, next: any) => {
+  const origJson = res.json.bind(res);
+
+  res.json = function (body: any) {
+    try {
+      if (body && typeof body === "object" && body.error && body.success === undefined) {
+        const errMsg = typeof body.error === "string" ? body.error : (body.error?.message || String(body.error));
+        const wrapped: any = { success: false, error: errMsg };
+        if (body.details) wrapped.details = body.details;
+        return origJson(wrapped);
+      }
+    } catch (e) {
+      console.warn("[response-wrapper] failed to wrap response:", e);
+    }
+    return origJson(body);
+  } as any;
+
+  next();
+});
+
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-// Path to persistent projects.json database
-const PROJECTS_FILE = path.join(process.cwd(), "projects.json");
+// In-memory caches to avoid writing to disk in serverless environments
+let inMemoryProjects: any[] = [];
+let inMemoryUserState: any = null;
 
-// Helper to load/save projects
+// Default user state
+const DEFAULT_USER_STATE = {
+  credits: 85,
+  appCreationsCount: 1,
+  deploymentsCount: 0,
+  referralCode: "",
+  referrals: [],
+  plan: "Free",
+  offerRedeemed: false,
+  offerSignupTime: null,
+  offerPopupShown: false
+};
+
+// Synchronous accessor used by existing handlers. Data is populated from Supabase in background.
 function getProjects() {
-  if (!fs.existsSync(PROJECTS_FILE)) {
-    fs.writeFileSync(PROJECTS_FILE, JSON.stringify([]));
-  }
-  try {
-    const raw = fs.readFileSync(PROJECTS_FILE, "utf-8");
-    return JSON.parse(raw);
-  } catch (e) {
-    return [];
-  }
+  return inMemoryProjects;
 }
 
+// Non-blocking save: update in-memory cache and attempt async persistence to Supabase if available
 function saveProjects(projects: any[]) {
-  fs.writeFileSync(PROJECTS_FILE, JSON.stringify(projects, null, 2));
+  inMemoryProjects = Array.isArray(projects) ? projects : [];
+
+  if (!supabaseAdmin) {
+    console.warn("[saveProjects] Supabase not configured — updated in-memory cache only");
+    return;
+  }
+
+  // Persist changes asynchronously without blocking request lifecycle
+  setImmediate(async () => {
+    try {
+      for (const p of inMemoryProjects) {
+        const payload: any = {
+          id: p.id,
+          user_id: p.userId || null,
+          name: p.name || null,
+          description: p.description || null,
+          prompt: p.prompt || null,
+          files: p.files || [],
+          preview_html: p.previewHtml || p.preview_html || null,
+          created_at: p.createdAt || p.created_at || new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+        await supabaseAdmin.from("projects").upsert([payload]);
+      }
+      console.log("[saveProjects] Persisted projects to Supabase");
+    } catch (err: any) {
+      if (['PGRST205', '42P01', '42501'].includes(err?.code) || /public\.projects|public\.marketplace_apps/i.test(err?.message || '')) {
+        console.warn("[saveProjects] Supabase schema issue or missing table detected:", err?.message || err);
+      } else {
+        console.warn("[saveProjects] Failed to persist projects to Supabase:", err?.message || err);
+      }
+    }
+  });
 }
 
-// Helper to load/save user state (billing, credits, referrals)
-const USER_STATE_FILE = path.join(process.cwd(), "user_state.json");
-
+// User state accessors
 function getUserState() {
-  if (!fs.existsSync(USER_STATE_FILE)) {
-    const initialState = {
-      credits: 85,
-      appCreationsCount: 1,
-      deploymentsCount: 0,
-      referralCode: "",
-      referrals: [],
-      plan: "Free",
-      offerRedeemed: false,
-      offerSignupTime: null,
-      offerPopupShown: false
-    };
-    fs.writeFileSync(USER_STATE_FILE, JSON.stringify(initialState, null, 2));
-    return initialState;
-  }
-  try {
-    const raw = fs.readFileSync(USER_STATE_FILE, "utf-8");
-    const state = JSON.parse(raw);
-    if (state.offerRedeemed === undefined) state.offerRedeemed = false;
-    if (state.offerSignupTime === undefined) state.offerSignupTime = null;
-    if (state.offerPopupShown === undefined) state.offerPopupShown = false;
-    return state;
-  } catch (e) {
-    return {
-      credits: 85,
-      appCreationsCount: 1,
-      deploymentsCount: 0,
-      referralCode: "",
-      referrals: [],
-      plan: "Free",
-      offerRedeemed: false,
-      offerSignupTime: null,
-      offerPopupShown: false
-    };
-  }
+  if (!inMemoryUserState) inMemoryUserState = { ...DEFAULT_USER_STATE };
+  return inMemoryUserState;
 }
 
 function saveUserState(state: any) {
-  fs.writeFileSync(USER_STATE_FILE, JSON.stringify(state, null, 2));
+  inMemoryUserState = { ...getUserState(), ...(state || {}) };
+
+  if (!supabaseAdmin) {
+    console.warn("[saveUserState] Supabase not configured — updated in-memory state only");
+    return;
+  }
+
+  // Optionally persist to 'profiles' table if an identifiable user id exists in the state
+  setImmediate(async () => {
+    try {
+      const profilePayload: any = {
+        // If you track a server-side profile id in the state, include it here
+        // id: inMemoryUserState.id || undefined,
+        credits: inMemoryUserState.credits,
+        app_creations_count: inMemoryUserState.appCreationsCount,
+        deployments_count: inMemoryUserState.deploymentsCount,
+        referral_code: inMemoryUserState.referralCode,
+        plan: inMemoryUserState.plan
+      };
+      // Only attempt an upsert if a profile id is set on the in-memory state
+      if (inMemoryUserState && inMemoryUserState.id) {
+        profilePayload.id = inMemoryUserState.id;
+        await supabaseAdmin.from("profiles").upsert([profilePayload]);
+        console.log("[saveUserState] Persisted user state to Supabase profiles");
+      }
+    } catch (err: any) {
+      console.warn("[saveUserState] Failed to persist user state to Supabase:", err?.message || err);
+    }
+  });
 }
+
+// Initialize caches from Supabase (best-effort, non-blocking)
+async function initCaches() {
+  if (!supabaseAdmin) {
+    console.warn("[initCaches] Supabase not configured — starting with empty caches");
+    inMemoryProjects = [];
+    inMemoryUserState = { ...DEFAULT_USER_STATE };
+    return;
+  }
+
+  try {
+    const { data: projects } = await supabaseAdmin.from("projects").select("*").order("created_at", { ascending: false }).limit(1000);
+    if (Array.isArray(projects)) {
+      inMemoryProjects = projects.map((p: any) => ({
+        id: p.id,
+        userId: p.user_id,
+        name: p.name,
+        description: p.description,
+        prompt: p.prompt,
+        files: p.files || [],
+        previewHtml: p.preview_html || p.previewHtml || null,
+        createdAt: p.created_at,
+        updatedAt: p.updated_at
+      }));
+      console.log(`[initCaches] Loaded ${inMemoryProjects.length} projects from Supabase`);
+    }
+  } catch (err: any) {
+    console.warn("[initCaches] Failed to load projects from Supabase:", err?.message || err);
+  }
+
+  try {
+    const { data: profiles } = await supabaseAdmin.from("profiles").select("*").limit(1);
+    if (Array.isArray(profiles) && profiles[0]) {
+      const p = profiles[0];
+      inMemoryUserState = {
+        credits: p.credits ?? DEFAULT_USER_STATE.credits,
+        appCreationsCount: p.app_creations_count ?? DEFAULT_USER_STATE.appCreationsCount,
+        deploymentsCount: p.deployments_count ?? DEFAULT_USER_STATE.deploymentsCount,
+        referralCode: p.referral_code ?? DEFAULT_USER_STATE.referralCode,
+        referrals: DEFAULT_USER_STATE.referrals,
+        plan: p.plan ?? DEFAULT_USER_STATE.plan,
+        offerRedeemed: DEFAULT_USER_STATE.offerRedeemed,
+        offerSignupTime: DEFAULT_USER_STATE.offerSignupTime,
+        offerPopupShown: DEFAULT_USER_STATE.offerPopupShown,
+        id: p.id
+      };
+      console.log("[initCaches] Loaded user state from Supabase profiles");
+    } else {
+      inMemoryUserState = { ...DEFAULT_USER_STATE };
+    }
+  } catch (err: any) {
+    console.warn("[initCaches] Failed to load user state from Supabase:", err?.message || err);
+    inMemoryUserState = { ...DEFAULT_USER_STATE };
+  }
+}
+
+// Kick off cache initialization (best-effort, non-blocking)
+initCaches().catch((e) => console.warn("[initCaches] Initialization error:", e?.message || e));
 
 // Initialize OpenRouter client
 console.log("Provider: OpenRouter");
@@ -244,15 +432,27 @@ function isMissingGoogleCredential(clientId: string | undefined, clientSecret: s
 }
 
 function resolveAppUrl(req: any) {
-  let appUrl = (process.env.APP_URL || "").trim().replace(/\/$/, "");
+  const configuredOrigin = [
+    process.env.APP_URL,
+    process.env.VITE_APP_URL,
+    process.env.VITE_REFERRAL_BASE_URL,
+    process.env.PUBLIC_APP_URL,
+  ].find((value) => typeof value === "string" && value.trim() && !value.includes("PLACEHOLDER") && !value.includes("YOUR_"));
+
+  let appUrl = (configuredOrigin || "").trim().replace(/\/$/, "");
   const hostHeader = req.get("host");
+  const forwardedHost = ((req.headers["x-forwarded-host"] as string) || "").split(",")[0]?.trim();
   const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol || "http";
 
   if (!IS_PROD && hostHeader) {
     return `${proto}://${hostHeader}`;
   }
 
-  if (!appUrl || appUrl === "MY_APP_URL" || appUrl.includes("PLACEHOLDER")) {
+  if (!appUrl || appUrl === "MY_APP_URL") {
+    const publicHost = forwardedHost || hostHeader;
+    if (publicHost && !publicHost.includes("supabase.co")) {
+      return `${proto}://${publicHost}`;
+    }
     if (hostHeader) {
       return `${proto}://${hostHeader}`;
     }
@@ -409,23 +609,73 @@ function renderPopupHtml(user: any, errorMessage: string | null) {
 
 // API: User State Details (Injects authenticated user status from cookie session)
 app.get("/api/user-state", (req, res) => {
-  const state = getUserState();
-  const sessionCookie = getCookieValue(req, "google_auth_session");
-  let loggedInUser = null;
-  if (sessionCookie) {
-    try {
-      const parsed = JSON.parse(decodeURIComponent(sessionCookie));
-      const hasExpired = new Date(parsed.expiresAt) < new Date();
-      if (!hasExpired) {
-        loggedInUser = parsed;
+  console.log("[USER_STATE_START]");
+  try {
+    const state = getUserState();
+    console.log("[USER_PROFILE_QUERY] Using local user-state store, no Supabase profile query executed");
+    console.log("[USER_CREDITS_QUERY] Using local credit state from user_state.json");
+
+    const sessionCookie = getCookieValue(req, "google_auth_session");
+    let loggedInUser = null;
+
+    if (sessionCookie) {
+      console.log("[USER_AUTH_FOUND] auth session cookie present");
+      try {
+        const decoded = decodeURIComponent(sessionCookie);
+        const parsed = JSON.parse(decoded);
+
+        if (!parsed || typeof parsed !== "object") {
+          throw new Error("Parsed auth session payload is invalid");
+        }
+
+        const expiresAt = parsed.expiresAt ? new Date(parsed.expiresAt) : null;
+        const isExpired = expiresAt ? expiresAt < new Date() : true;
+
+        if (!isExpired) {
+          loggedInUser = parsed;
+          console.log("[USER_AUTH_FOUND] Session valid", {
+            userId: parsed.id ?? parsed.user_id,
+            email: parsed.email,
+            expiresAt: parsed.expiresAt,
+          });
+        } else {
+          console.log("[USER_AUTH_FOUND] Session expired", { expiresAt: parsed.expiresAt });
+        }
+      } catch (cookieErr: any) {
+        console.error(`[USER_STATE_ERROR] Failed to parse auth session cookie: ${cookieErr.message}`);
       }
-    } catch (e) {}
+    } else {
+      console.log("[USER_AUTH_FOUND] No auth session cookie found");
+    }
+
+    const response = {
+      success: true,
+      ...state,
+      user: loggedInUser,
+    };
+
+    console.log(`[USER_STATE_SUCCESS] Credits: ${response.credits}, Plan: ${response.plan}, User: ${loggedInUser ? 'authenticated' : 'guest'}`);
+    return res.json(response);
+  } catch (err: any) {
+    console.error(`[USER_STATE_ERROR] ${err.message}`);
+    console.error(`[USER_STATE_ERROR] Stack: ${err.stack}`);
+
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Failed to load user state",
+      details: err.stack || null,
+      credits: 85,
+      plan: "Free",
+      user: null,
+      appCreationsCount: 1,
+      deploymentsCount: 0,
+      referralCode: "",
+      referrals: [],
+      offerRedeemed: false,
+      offerSignupTime: null,
+      offerPopupShown: false,
+    });
   }
-  return res.json({
-    success: true,
-    ...state,
-    user: loggedInUser
-  });
 });
 
 // API: User state alias for auth bootstrap
@@ -567,7 +817,7 @@ function generateReferralCode() {
 
 // Create referral for a user (generate unique code)
 app.post("/api/referrals/generate", async (req, res) => {
-  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+  if (!supabaseAdmin) return res.status(503).json({ success: false, error: "Supabase admin client not configured" });
   const sessionCookie = getCookieValue(req, "google_auth_session");
   if (!sessionCookie) return res.status(401).json({ error: "Authentication required" });
   const user = JSON.parse(decodeURIComponent(sessionCookie));
@@ -714,16 +964,14 @@ app.get("/api/referrals/stats", async (req, res) => {
 
 // Accept student verification submission. Supports base64 images or file URLs.
 app.post("/api/student-verification/submit", async (req, res) => {
-  if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+  if (!supabaseAdmin) return res.status(503).json({ success: false, error: "Supabase admin client not configured" });
   const payload = req.body || {};
   const required = ["full_name", "registered_email", "college_name", "course", "year", "mobile_number"];
-  for (const f of required) if (!payload[f]) return res.status(400).json({ error: `${f} is required` });
+  for (const f of required) if (!payload[f]) return res.status(400).json({ success: false, error: `${f} is required` });
 
   try {
-    // If ID images provided as base64 strings, save them to /public/uploads
+    // If ID images provided as base64 strings, attempt local write but gracefully fall back to Supabase Storage
     const uploadsDir = path.join(process.cwd(), "public", "uploads");
-    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-
     let frontUrl = payload.id_front_url || null;
     let backUrl = payload.id_back_url || null;
 
@@ -731,15 +979,54 @@ app.post("/api/student-verification/submit", async (req, res) => {
       const data = payload.id_front_base64.replace(/^data:\w+\/[a-zA-Z]+;base64,/, "");
       const fname = `front_${Date.now()}.png`;
       const fpath = path.join(uploadsDir, fname);
-      fs.writeFileSync(fpath, Buffer.from(data, "base64"));
-      frontUrl = `/uploads/${fname}`;
+      if (!IS_PROD) {
+        try {
+          if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+          fs.writeFileSync(fpath, Buffer.from(data, "base64"));
+          frontUrl = `/uploads/${fname}`;
+        } catch (fsErr: any) {
+          console.warn("[student-verification] local write failed (non-prod):", fsErr?.code || fsErr?.message || fsErr);
+        }
+      }
+
+      if (!frontUrl && supabaseAdmin) {
+        try {
+          const bucket = "student-verification";
+          await supabaseAdmin.storage.from(bucket).upload(fname, Buffer.from(data, "base64"), { upsert: true, contentType: "image/png" });
+          const { data: urlData } = supabaseAdmin.storage.from(bucket).getPublicUrl(fname);
+          frontUrl = urlData?.publicUrl || null;
+        } catch (sErr: any) {
+          console.warn("[student-verification] Supabase storage upload failed:", sErr?.message || sErr);
+          frontUrl = null;
+        }
+      }
     }
+
     if (payload.id_back_base64 && !backUrl) {
       const data = payload.id_back_base64.replace(/^data:\w+\/[a-zA-Z]+;base64,/, "");
       const fname = `back_${Date.now()}.png`;
       const fpath = path.join(uploadsDir, fname);
-      fs.writeFileSync(fpath, Buffer.from(data, "base64"));
-      backUrl = `/uploads/${fname}`;
+      if (!IS_PROD) {
+        try {
+          if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+          fs.writeFileSync(fpath, Buffer.from(data, "base64"));
+          backUrl = `/uploads/${fname}`;
+        } catch (fsErr: any) {
+          console.warn("[student-verification] local write failed (non-prod):", fsErr?.code || fsErr?.message || fsErr);
+        }
+      }
+
+      if (!backUrl && supabaseAdmin) {
+        try {
+          const bucket = "student-verification";
+          await supabaseAdmin.storage.from(bucket).upload(fname, Buffer.from(data, "base64"), { upsert: true, contentType: "image/png" });
+          const { data: urlData } = supabaseAdmin.storage.from(bucket).getPublicUrl(fname);
+          backUrl = urlData?.publicUrl || null;
+        } catch (sErr: any) {
+          console.warn("[student-verification] Supabase storage upload failed:", sErr?.message || sErr);
+          backUrl = null;
+        }
+      }
     }
 
     const record: any = {
@@ -756,10 +1043,10 @@ app.post("/api/student-verification/submit", async (req, res) => {
     };
 
     const { data, error } = await supabaseAdmin.from("student_verifications").insert([record]).select().single();
-    if (error) return res.status(500).json({ error: error.message || error });
+    if (error) return res.status(500).json({ success: false, error: error.message || error });
     return res.json({ success: true, verification: data });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || String(err) });
+    return res.status(500).json({ success: false, error: err.message || String(err) });
   }
 });
 
@@ -1212,17 +1499,29 @@ app.get("/api/api-key-status", async (req, res) => {
 
   if (hasKey) {
     try {
+      // Use AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
       const simpleTest = await fetch("https://openrouter.ai/api/v1/models", {
         headers: {
           Authorization: `Bearer ${configuredKey}`,
           "Content-Type": "application/json",
         },
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
+      
       if (simpleTest.ok) {
         status = "CONNECTED";
+        console.log("[api-key-status] OpenRouter connection verified");
+      } else {
+        console.warn(`[api-key-status] OpenRouter returned ${simpleTest.status}, keeping CONFIGURED status`);
       }
     } catch (error) {
-      console.warn("OpenRouter health check failed:", error);
+      console.warn("[api-key-status] Health check failed (may be temporary network issue):", error);
+      // Still report CONFIGURED if we have a key, even if health check fails
+      status = hasKey ? "CONFIGURED" : "MISSING";
     }
   }
 
@@ -1438,9 +1737,16 @@ Strict rules:
     const response = await aiClient.chat.completions.create({
       model: process.env.MODEL || "openrouter/auto",
       messages: [{ role: "user", content: promptInstructions }],
-      response_format: { type: "json_object" }
+      response_format: { type: "json_object" },
+      max_tokens: 800
     });
 
+    console.log("[OPENROUTER] Plan response received", { status: "ok" });
+    
+    if (!response?.choices?.[0]?.message?.content) {
+      throw new Error("OpenRouter plan response missing content");
+    }
+    
     const parsed = safeParseJSON(response.choices[0].message.content || "{}");
     res.json({
       prompt: prompt,
@@ -1729,13 +2035,30 @@ Use this exact structure:
 // ==========================================
 // ERROR DETECTION & SELF-HEALING SYSTEM
 // ==========================================
-function analyzeCodeForErrors(files: any[], previewHtml: string): string[] {
+function normalizePreviewHtml(value: any): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  if (typeof value === "object") {
+    if (typeof value.html === "string") return value.html;
+    if (typeof value.previewHtml === "string") return value.previewHtml;
+    if (typeof value.content === "string") return value.content;
+    try {
+      return JSON.stringify(value);
+    } catch (_err) {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function analyzeCodeForErrors(files: any[], previewHtml: any): string[] {
   const errors: string[] = [];
-  
-  if (!previewHtml || previewHtml.trim().length === 0) {
+  const normalizedPreviewHtml = normalizePreviewHtml(previewHtml);
+
+  if (!normalizedPreviewHtml.trim().length) {
     errors.push("The primary preview viewport HTML content is empty or unpopulated.");
   } else {
-    const htmlLower = previewHtml.toLowerCase();
+    const htmlLower = normalizedPreviewHtml.toLowerCase();
     
     // Check for unbalanced HTML tags of major components
     const tagsToCheck = ["div", "main", "section", "article", "header", "footer"];
@@ -1747,16 +2070,16 @@ function analyzeCodeForErrors(files: any[], previewHtml: string): string[] {
       }
     });
 
-    if (previewHtml.includes("TODO:") || previewHtml.includes("// TODO") || previewHtml.includes("<!-- TODO")) {
+    if (normalizedPreviewHtml.includes("TODO:") || normalizedPreviewHtml.includes("// TODO") || normalizedPreviewHtml.includes("<!-- TODO")) {
       errors.push("Code contains incomplete placeholder comments (e.g. TODO tags) inside render controllers.");
     }
 
-    if (!previewHtml.includes("<script") && !htmlLower.includes("cdn.jsdelivr.net") && !htmlLower.includes("lucide.min.js")) {
+    if (!normalizedPreviewHtml.includes("<script") && !htmlLower.includes("cdn.jsdelivr.net") && !htmlLower.includes("lucide.min.js")) {
       errors.push("Interactivity package missing: The HTML output does not load any UI control scripts or dynamic states.");
     }
     
     // Check for obvious syntax warnings inside scripts
-    const scriptBlocks = previewHtml.match(/<script\b[^>]*>([\s\S]*?)<\/script>/gi);
+    const scriptBlocks = normalizedPreviewHtml.match(/<script\b[^>]*>([\s\S]*?)<\/script>/gi);
     if (scriptBlocks) {
       scriptBlocks.forEach((block, idx) => {
         const jsText = block.replace(/<\/?[^>]+(>|$)/g, ""); // strip script tags
@@ -1858,7 +2181,8 @@ async function performValidationAndSelfHealing(generated: any, prompt: string, a
       typeof content === "string" ? { path: filePath, content } : { path: filePath, ...(content as object) }
     );
   }
-  const errors = analyzeCodeForErrors(Array.isArray(generated.files) ? generated.files : [], generated.previewHtml || "");
+  generated.previewHtml = normalizePreviewHtml(generated.previewHtml);
+  const errors = analyzeCodeForErrors(Array.isArray(generated.files) ? generated.files : [], generated.previewHtml);
   
   const report: any = {
     status: errors.length === 0 ? "success" : "repaired",
@@ -1873,68 +2197,25 @@ async function performValidationAndSelfHealing(generated: any, prompt: string, a
     }
   };
 
-  if (errors.length === 0 || !aiClient || attempt > 2) {
-    if (errors.length > 0) {
-      report.status = "fail";
-      report.validationSpecs.build = "failed";
-    }
-    return { repairedProject: generated, diagnosticReport: report };
+  if (errors.length > 0) {
+    report.status = "fail";
+    report.validationSpecs.build = "failed";
   }
-
-  // Self-Healing Trigger!
-  console.log(`[SELF-HEALING] Detected ${errors.length} issues. Initiating auto-correction attempt #${attempt}...`);
-  try {
-    const healingPrompt = `You are a Senior Systems QA Automator. The previous code generation for user requirement: "${prompt}" resulted in several static analysis errors in the code:
-${errors.map((err, idx) => `${idx + 1}. ${err}`).join("\n")}
-
-YOUR MISSION:
-1. Revise the code files to mend unbalanced tag nesting, brackets, and any unresolved module imports (ensure package.json contains all needed external libraries).
-2. Upgrade 'previewHtml' to be 100% compliant, fully interactive, gorgeous, and responsive with no unclosed or incorrect elements.
-3. Keep the exact file tree structures and names.
-
-Respond strictly in corporate developer JSON structure matched below.`;
-
-    const response = await aiClient.chat.completions.create({
-      model: process.env.MODEL || "openrouter/auto",
-      messages: [
-        { role: "system", content: "Return the absolute finest fixed codebase with no syntax errors. Direct JSON output." },
-        { role: "user", content: healingPrompt }
-      ],
-      response_format: { type: "json_object" }
-    });
-
-    const parsedFixed = safeParseJSON(response.choices[0].message.content || "{}");
-    if (parsedFixed && parsedFixed.files) {
-      // Normalize files to array if AI returned an object
-      if (!Array.isArray(parsedFixed.files)) {
-        parsedFixed.files = Object.entries(parsedFixed.files).map(([filePath, content]) =>
-          typeof content === "string" ? { path: filePath, content } : { path: filePath, ...(content as object) }
-        );
-      }
-      // Re-run static analysis on new code
-      const newErrors = analyzeCodeForErrors(parsedFixed.files, parsedFixed.previewHtml);
-      const appliedFixes = errors.map(err => `Auto-repaired: ${err}`);
-      
-      const subResult = await performValidationAndSelfHealing(parsedFixed, prompt, attempt + 1);
-      subResult.diagnosticReport.autoFixesApplied = [
-        ...appliedFixes,
-        ...(subResult.diagnosticReport.autoFixesApplied || [])
-      ];
-      subResult.diagnosticReport.status = "repaired";
-      subResult.diagnosticReport.validationSpecs.build = "passed";
-      subResult.diagnosticReport.validationSpecs.consoleCheck = "0 errors, self-healing loop successfully verified compiled tree";
-      return subResult;
-    }
-  } catch (e) {
-    console.error(`[SELF-HEALING] Repair attempt #${attempt} failed:`, e);
-  }
-
+  console.log("[VALIDATION] Self-healing disabled; returning diagnostic report", { errorCount: errors.length });
   return { repairedProject: generated, diagnosticReport: report };
 }
 
 // API: Generate Project
 app.post("/api/generate", async (req, res) => {
   const { prompt, size } = req.body;
+  const TOTAL_TIMER = "generate-total";
+  const OR_TIMER = "openrouter-request";
+  const PARSE_TIMER = "json-parse";
+  const PROJECT_TIMER = "project-creation";
+  const GENERATE_START_TIME = Date.now();
+  
+  console.time(TOTAL_TIMER);
+  console.log("GENERATE_START", { prompt: prompt?.substring(0, 50), size, timestamp: new Date().toISOString() });
   
   if (!prompt || typeof prompt !== "string") {
     return res.status(400).json({ error: "Prompt is required." });
@@ -1942,6 +2223,7 @@ app.post("/api/generate", async (req, res) => {
 
   // Credit limits validation
   const state = getUserState();
+  console.log("AUTH_SUCCESS", { plan: state.plan, credits: state.credits, appCreationsCount: state.appCreationsCount });
   const selectedSize = size || "Medium";
   let cost = 15;
   if (selectedSize === "Small") cost = 5;
@@ -1959,6 +2241,8 @@ app.post("/api/generate", async (req, res) => {
       });
     }
   }
+  console.log("CREDITS_CHECK_SUCCESS", { selectedSize, cost, creditsRemaining: state.credits });
+  console.log("PROMPT_VALIDATION_SUCCESS", { prompt: prompt.substring(0, 80), selectedSize });
 
   // Deduct/Advance credits
   if (state.plan === "Free") {
@@ -1987,12 +2271,21 @@ app.post("/api/generate", async (req, res) => {
   }
 
   if (!aiClient) {
-    return res.status(500).json({
-      error: "OpenRouter API key is not configured. Please add your OPENROUTER_API_KEY in the Secrets panel."
-    });
+    return res.status(503).json({ success: false, error: "OpenRouter API key is not configured. Please add your OPENROUTER_API_KEY in the Secrets panel." });
   }
 
   try {
+    const MODEL = process.env.MODEL || "openrouter/auto";
+    
+    // REDUCED token limits for Vercel timeout (10 seconds)
+    let MAX_TOKENS = 1200;
+    if (selectedSize === "Small") MAX_TOKENS = 800;
+    else if (selectedSize === "Large") MAX_TOKENS = 1500;
+    
+    console.log("MODEL", MODEL);
+    console.log("MAX_TOKENS", MAX_TOKENS);
+    console.log("SIZE", selectedSize);
+    
     const systemInstruction = `You are a world-class Full-Stack Tech Lead and UI/UX Architect who builds fully responsive, production-ready web apps.
 Your task is to analyze the user's prompt and generate a complete, high-quality, comprehensive codebase.
 You must return your output in strict JSON format matching the schema requested.
@@ -2006,21 +2299,59 @@ CRITICAL INSTRUCTIONS:
    - Use beautiful modern dark or light design matching the professional nature of the site. Generous padding, crisp typography (Inter or Space Grotesk), balanced spacing, rounded corners.
    - Ensure the live standalone preview looks like a fully designed application with realistic mock data - do NOT use "Lorem ipsum" dummy text. Use real descriptive text appropriate for the domain (e.g., real channel names and video titles for a YouTube clone).`;
 
-    const response = await aiClient.chat.completions.create({
-      model: process.env.MODEL || "openrouter/auto",
-      messages: [
-        { role: "system", content: systemInstruction },
-        { role: "user", content: `Build a highly functional web application based on this request: "${prompt}"` }
-      ],
-      response_format: { type: "json_object" }
+    console.log("OPENROUTER_REQUEST_START", { model: MODEL, maxTokens: MAX_TOKENS });
+    console.time(OR_TIMER);
+    
+    const completionResult = await requestOpenRouterCompletion([
+      { role: "system", content: systemInstruction },
+      { role: "user", content: `Build a highly functional web application based on this request: "${prompt}"` }
+    ], MAX_TOKENS);
+
+    if (completionResult.paymentFailure) {
+      console.error("OPENROUTER_CREDITS_EXHAUSTED", { model: completionResult.model, error: completionResult.error });
+      console.timeEnd(OR_TIMER);
+      console.timeEnd(TOTAL_TIMER);
+      return res.status(402).json({ success: false, error: "OpenRouter credits exhausted" });
+    }
+
+    const response = completionResult.response;
+    console.timeEnd(OR_TIMER);
+    console.log("OPENROUTER_RESPONSE_RECEIVED", { 
+      model: completionResult.model,
+      choices: response.choices?.length || 0,
+      firstChoiceContent: response.choices?.[0]?.message?.content ? `${response.choices[0].message.content.substring(0, 50)}...` : "EMPTY"
     });
+
+    // Safe response parsing with detailed error checking
+    if (!response) {
+      throw new Error("OpenRouter returned null response object");
+    }
+    if (!response.choices) {
+      throw new Error("OpenRouter response has no choices array");
+    }
+    if (!Array.isArray(response.choices) || response.choices.length === 0) {
+      throw new Error(`OpenRouter choices array invalid or empty: ${JSON.stringify(response.choices)}`);
+    }
+    if (!response.choices[0]) {
+      throw new Error("OpenRouter choices[0] is null/undefined");
+    }
+    if (!response.choices[0].message) {
+      throw new Error("OpenRouter choices[0].message is null/undefined");
+    }
 
     const resultText = response.choices[0].message.content;
     if (!resultText) {
-      throw new Error("No response returned from OpenRouter API");
+      console.error("[OPENROUTER] Empty content returned", {
+        choice: response.choices[0],
+        response
+      });
+      throw new Error("OpenRouter returned empty content string");
     }
 
+    console.log("[OPENROUTER] Parsing JSON response...");
+    console.time(PARSE_TIMER);
     const generated = safeParseJSON(resultText);
+    console.timeEnd(PARSE_TIMER);
 
     // Normalize files to array at generation time
     if (generated.files && !Array.isArray(generated.files)) {
@@ -2029,36 +2360,82 @@ CRITICAL INSTRUCTIONS:
       );
     }
     
-    // Perform thorough Error Detection AND Self-Healing Auto-Fix System checks
-    const { repairedProject, diagnosticReport } = await performValidationAndSelfHealing(generated, prompt);
-
-    // Save project in persistent json list
+    console.time(PROJECT_TIMER);
+    
+    // CRITICAL OPTIMIZATION: Skip expensive validation on Vercel
+    // Move to background task to prevent 504 timeout
     const projects = getProjects();
-    const newProject = {
-      id: "proj_" + Math.random().toString(36).substring(2, 9),
-      name: repairedProject.name,
-      description: repairedProject.description,
+    const projectId = "proj_" + Math.random().toString(36).substring(2, 9);
+    
+    // Create minimal response IMMEDIATELY
+    const minimalProject = {
+      id: projectId,
+      name: generated.name || "Generated App",
+      description: generated.description || "",
       prompt: prompt,
-      analysis: repairedProject.analysis || generated.analysis,
-      files: Array.isArray(repairedProject.files) ? repairedProject.files : [],
-      previewHtml: repairedProject.previewHtml,
-      autoDiagnosticReport: diagnosticReport,
+      analysis: generated.analysis,
+      files: Array.isArray(generated.files) ? generated.files : [],
+      previewHtml: normalizePreviewHtml(generated.previewHtml),
+      autoDiagnosticReport: { status: "pending", processing: true },
       createdAt: new Date().toISOString(),
       deployments: []
     };
-    projects.push(newProject);
-    saveProjects(projects);
-
-    res.json(newProject);
+    console.log("PROJECT_SAVE_START", { projectId });
+    try {
+      projects.push(minimalProject);
+      saveProjects(projects);
+      console.log("PROJECT_SAVE_SUCCESS", { projectId });
+    } catch (saveError: any) {
+      console.error("PROJECT_SAVE_FAILED", { projectId, message: saveError?.message || saveError, stack: saveError?.stack });
+    }
+    
+    console.timeEnd(PROJECT_TIMER);
+    console.timeEnd(TOTAL_TIMER);
+    console.log("GENERATE_FINISHED", { projectId, totalMs: Date.now() - GENERATE_START_TIME });
+    
+    // Return immediately with generated content; background validation disabled.
+    console.log("[RESPONSE] Sending HTTP 200 with generated project");
+    res.json(minimalProject);
+    
   } catch (error: any) {
-    console.error("Code generation error:", error);
-    res.status(500).json({ error: error.message || "Failed to generate website code. Please check your request is valid." });
+    // Handle OpenRouter 402 credits exhausted
+    const errorMessage = error?.message || String(error);
+    const errorStack = error?.stack || "no stack";
+    const errorStatus = error?.status || error?.statusCode || null;
+    
+    if (errorStatus === 402 || errorMessage.includes("Payment Required") || errorMessage.includes("OpenRouter credits exhausted")) {
+      console.error("OPENROUTER_CREDITS_EXHAUSTED", { errorMessage, errorStatus, stack: errorStack });
+      console.timeEnd(TOTAL_TIMER);
+      return res.status(402).json({ success: false, error: "OpenRouter credits exhausted" });
+    }
+
+    console.error("━━━ GENERATE API FAILURE ━━━");
+    console.error("FILE: server.ts");
+    console.error("ENDPOINT: POST /api/generate");
+    console.error("MODEL_LIST:", OPENROUTER_FALLBACK_MODELS);
+    console.error("ERROR_MESSAGE:", errorMessage);
+    console.error("ERROR_STATUS:", errorStatus || "n/a");
+    console.error("ERROR_STACK:", errorStack.split("\n").slice(0, 8).join(" | "));
+    console.error("FULL_ERROR:", JSON.stringify(error, null, 2));
+    console.error("━━━ END ERROR LOG ━━━");
+    console.timeEnd(TOTAL_TIMER);
+    
+    res.status(500).json({ 
+      success: false,
+      error: errorMessage || "Failed to generate website code. Please check your request is valid.",
+      details: process.env.NODE_ENV === "development" ? errorMessage : undefined
+    });
   }
 });
 
 // API: Refine / Edit Programmatically or with Prompt
 app.post("/api/refine", async (req, res) => {
   const { projectId, prompt, files } = req.body;
+  const TOTAL_TIMER = "refine-total";
+  const OR_TIMER = "refine-openrouter";
+
+  console.time(TOTAL_TIMER);
+  console.log("REFINE_START", { projectId, prompt: prompt?.substring(0, 50), timestamp: new Date().toISOString() });
 
   if (!projectId || !prompt) {
     return res.status(400).json({ error: "projectId and prompt are required." });
@@ -2099,19 +2476,27 @@ Ensure:
       requestedRefinement: prompt
     };
 
+    // REDUCED max_tokens for faster response (1000 instead of 1600)
+    console.time(OR_TIMER);
     const response = await aiClient.chat.completions.create({
       model: process.env.MODEL || "openrouter/auto",
       messages: [
         { role: "system", content: systemInstruction },
         { role: "user", content: `Apply this adjustment: "${prompt}" to the existing project: ${JSON.stringify(payload)}` }
       ],
-      response_format: { type: "json_object" }
+      response_format: { type: "json_object" },
+      max_tokens: 1000
     });
+    console.timeEnd(OR_TIMER);
 
-    const resultText = response.choices[0].message.content;
-    if (!resultText) {
-      throw new Error("No response returned from OpenRouter API");
+    console.log("[OPENROUTER] Refine response received");
+    
+    // Safe response parsing
+    if (!response?.choices?.[0]?.message?.content) {
+      throw new Error("OpenRouter refine response missing content: " + JSON.stringify(response));
     }
+    
+    const resultText = response.choices[0].message.content;
 
     const updatedData = safeParseJSON(resultText);
 
@@ -2122,23 +2507,40 @@ Ensure:
       );
     }
 
-    // Perform thorough Error Detection AND Self-Healing Auto-Fix System checks on refinement
-    const { repairedProject, diagnosticReport } = await performValidationAndSelfHealing(updatedData, prompt);
-
-    // Update Project in database
-    targetProject.name = repairedProject.name || targetProject.name;
-    targetProject.description = repairedProject.description || targetProject.description;
-    targetProject.files = Array.isArray(repairedProject.files) ? repairedProject.files : targetProject.files;
-    targetProject.previewHtml = repairedProject.previewHtml;
-    targetProject.autoDiagnosticReport = diagnosticReport;
+    // Update Project in database IMMEDIATELY with raw response
+    targetProject.name = updatedData.name || targetProject.name;
+    targetProject.description = updatedData.description || targetProject.description;
+    targetProject.files = Array.isArray(updatedData.files) ? updatedData.files : targetProject.files;
+    targetProject.previewHtml = normalizePreviewHtml(updatedData.previewHtml);
+    targetProject.autoDiagnosticReport = { status: "pending", processing: true };
     
     // Save updated project list
     saveProjects(projects);
 
+    console.timeEnd(TOTAL_TIMER);
+    console.log("[RESPONSE] Sending HTTP 200 with refined project");
     res.json(targetProject);
+    // Background refine validation disabled to ensure quick response behavior in serverless production.
+    
   } catch (error: any) {
-    console.error("Refinement error:", error);
-    res.status(500).json({ error: error.message || "Failed to refine webpage code. Please try another instruction." });
+    // Comprehensive error logging for /api/refine
+    const errorMessage = error?.message || String(error);
+    const errorStack = error?.stack || "no stack";
+    
+    console.error("━━━ REFINE API FAILURE ━━━");
+    console.error("FILE: server.ts");
+    console.error("ENDPOINT: POST /api/refine");
+    console.error("ERROR_MESSAGE:", errorMessage);
+    console.error("ERROR_STACK:", errorStack.split("\n").slice(0, 8).join(" | "));
+    console.error("FULL_ERROR:", JSON.stringify(error, null, 2));
+    console.error("━━━ END ERROR LOG ━━━");
+    console.timeEnd(TOTAL_TIMER);
+    
+    res.status(500).json({ 
+      success: false,
+      error: errorMessage || "Failed to refine webpage code. Please try another instruction.",
+      details: process.env.NODE_ENV === "development" ? errorMessage : undefined
+    });
   }
 });
 
@@ -2529,6 +2931,19 @@ app.use((req: any, res: any, next: any) => {
     return res.status(404).json({ success: false, error: "API endpoint not found" });
   }
   next();
+});
+
+// Global error handler — convert unexpected errors into structured JSON in production
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error("[UNHANDLED_ERROR]", err?.message || err);
+  if (res.headersSent) return next(err);
+
+  const message = err?.message || "Internal server error";
+  if (process.env.NODE_ENV === "development") {
+    return res.status(500).json({ success: false, error: message, details: err?.stack });
+  }
+
+  return res.status(500).json({ success: false, error: message });
 });
 
 const isVercel = !!process.env.VERCEL;

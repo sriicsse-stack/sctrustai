@@ -2,8 +2,7 @@ import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ShieldCheck, CheckCircle2, XCircle, Eye, Clock, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
 import { supabase, StudentVerification } from "../lib/supabaseClient";
-
-const SERVICE_KEY = import.meta.env.VITE_SUPABASE_SERVICE_KEY || "";
+import { safeInvoke, isInvokeSuccess } from "../lib/safeInvoke";
 
 export default function AdminVerificationDashboard() {
   const [records, setRecords] = useState<StudentVerification[]>([]);
@@ -16,13 +15,29 @@ export default function AdminVerificationDashboard() {
 
   const load = async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from("student_verifications")
-      .select("*")
-      .order("submitted_at", { ascending: false })
-      .limit(50);
-    setRecords(Array.isArray(data) ? data : []);
-    setLoading(false);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        console.error('[AdminVerificationDashboard] Not authenticated');
+        setRecords([]);
+        setLoading(false);
+        return;
+      }
+
+      // Call the secure edge function with auth token
+      const response = await safeInvoke(supabase, 'student-verification-admin', {
+        body: { action: 'list' },
+      });
+
+      if (isInvokeSuccess(response)) {
+        setRecords(Array.isArray(response.data?.records) ? response.data.records : []);
+      } else {
+        console.error('[AdminVerificationDashboard] Failed to load records:', response.error?.message);
+        setRecords([]);
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -34,43 +49,30 @@ export default function AdminVerificationDashboard() {
     const bonusCredits = isApprove ? (credits[id] ?? 100) : 0;
     const discountPercentage = isApprove ? (discount[id] ?? 50) : 0;
     const reviewNotes = notes[id] || null;
-    const rejectionReason = status === "rejected" ? (notes[id] || "Verification rejected by admin.") : null;
-    await supabase.from("student_verifications").update({
-      verification_status: status,
-      status: status,
-      reviewer_notes: reviewNotes,
-      rejection_reason: rejectionReason,
-      approved_by: isApprove ? "admin" : null,
-      approved_at: isApprove ? new Date().toISOString() : null,
-      bonus_credits: bonusCredits,
-      discount_percentage: discountPercentage,
-      reviewed_at: new Date().toISOString(),
-    }).eq("id", id);
 
-    if (isApprove && record.user_id) {
-      const profile = await supabase
-        .from("profiles")
-        .select("credits")
-        .eq("id", record.user_id)
-        .single();
-      if (profile.data) {
-        await supabase.from("profiles").update({
-          credits: (profile.data.credits || 0) + bonusCredits,
-          student_discount_active: true,
-          student_status: "approved",
-        }).eq("id", record.user_id);
+    try {
+      // Call the secure edge function to perform admin operations server-side
+      const response = await safeInvoke(supabase, 'student-verification-admin', {
+        body: {
+          action: 'update',
+          id,
+          status,
+          bonus_credits: bonusCredits,
+          discount_percentage: discountPercentage,
+          reviewer_notes: reviewNotes,
+        },
+      });
+
+      if (isInvokeSuccess(response)) {
+        console.log('[AdminVerificationDashboard] ✅ Verification updated:', { id, status });
+        await load();
+      } else {
+        console.error('[AdminVerificationDashboard] Failed to update:', response.error?.message);
+        alert(`Failed to update: ${response.error?.message}`);
       }
+    } finally {
+      setProcessing(null);
     }
-
-    if (!isApprove && record.user_id) {
-      await supabase.from("profiles").update({
-        student_discount_active: false,
-        student_status: "rejected",
-      }).eq("id", record.user_id);
-    }
-
-    await load();
-    setProcessing(null);
   };
 
   const statusBadge = (s?: string) => {

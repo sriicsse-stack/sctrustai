@@ -131,7 +131,7 @@ Deno.serve(async (req) => {
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: `Create a detailed architecture plan for this app: "${prompt}"${analysisText}` }
         ],
-        max_tokens: 4000,
+        max_tokens: 1200,
         stream: false
       })
     });

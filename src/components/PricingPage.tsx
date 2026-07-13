@@ -35,6 +35,7 @@ import StudentVerificationModal from "./StudentVerificationModal";
 import StudentApprovedScreen from "./StudentApprovedScreen";
 import AdminVerificationDashboard from "./AdminVerificationDashboard";
 import { supabase, StudentVerification } from "../lib/supabaseClient";
+import { safeInvoke, isInvokeSuccess } from "../lib/safeInvoke";
 
 interface PricingPageProps {
   currentPlan: string;
@@ -168,9 +169,6 @@ export default function PricingPage({
       document.body.appendChild(s);
     });
 
-  const BASE = "https://zgglpeyyzozwxnkdliqh.supabase.co/functions/v1";
-  const ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpnZ2xwZXl5em96d3hua2RsaXFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2NjM1ODAsImV4cCI6MjA5ODIzOTU4MH0.07utLUydxZAiH5rrLi5uW5tg6kHYYypbcJvFRKdYLrM";
-
   const handleRazorpayPayment = async () => {
     if (!selectedUpgradePlan) return;
 
@@ -190,17 +188,17 @@ export default function PricingPage({
     // Step 2: Create order on backend (server sets amount authoritatively)
     let orderData: any;
     try {
-      const res = await fetch(`${BASE}/razorpay-order`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${ANON}`, "apikey": ANON },
-        body: JSON.stringify({
+      const response = await safeInvoke(supabase, "razorpay-order", {
+        body: {
           planName: selectedUpgradePlan.name,
           userId,
           isStudent: isStudentApproved,
-        }),
+        },
       });
-      orderData = await res.json();
-      if (orderData.error) throw new Error(orderData.error);
+      if (!isInvokeSuccess(response)) {
+        throw new Error(response.error?.message || "Failed to create payment order.");
+      }
+      orderData = response.data;
     } catch (err: any) {
       setCheckoutError(err?.message || "Failed to create payment order. Please try again.");
       setCheckoutStep("error");
@@ -224,19 +222,19 @@ export default function PricingPage({
         setIsProcessing(true);
         setCheckoutStep("processing");
         try {
-          const verifyRes = await fetch(`${BASE}/razorpay-verify`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${ANON}`, "apikey": ANON },
-            body: JSON.stringify({
-              razorpay_order_id:   response.razorpay_order_id,
+          const verifyResponse = await safeInvoke(supabase, "razorpay-verify", {
+            body: {
+              razorpay_order_id: response.razorpay_order_id,
               razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature:  response.razorpay_signature,
+              razorpay_signature: response.razorpay_signature,
               userId,
               planName: selectedUpgradePlan.name,
-            }),
+            },
           });
-          const verifyData = await verifyRes.json();
-          if (verifyData.error) throw new Error(verifyData.error);
+          if (!isInvokeSuccess(verifyResponse)) {
+            throw new Error(verifyResponse.error?.message || "Payment verification failed.");
+          }
+          const verifyData = verifyResponse.data;
 
           // Step 5: Update local state + save receipt
           setReceipt({

@@ -270,7 +270,7 @@ Deno.serve(async (req) => {
             { role: "system", content: EDIT_MODE_SYSTEM_PROMPT },
             { role: "user", content: `CHANGE REQUEST: "${prompt}"${imageContext}\n\nAPPLY THIS CHANGE to the existing app HTML below. Return ONLY the complete updated HTML file.\n\nEXISTING APP HTML:\n${currentPreviewHtml.substring(0, 14000)}` }
           ],
-          max_tokens: 6000,
+          max_tokens: 1200,
           stream: false
         })
       });
@@ -328,7 +328,7 @@ Deno.serve(async (req) => {
           { role: "system", content: REFINE_SYSTEM },
           { role: "user", content: `CURRENT APP DATA:\n${JSON.stringify(existingData, null, 2).substring(0, 2500)}\n\nMODIFICATION REQUEST: "${prompt}"${images && images.length > 0 ? `\n\nReference images provided (${images.length}): ${images.slice(0, 3).join(", ")} — use their visual style to guide color/layout changes.` : ""}\n\nReturn the COMPLETE updated JSON with the change applied. Keep ALL existing fields.` }
         ],
-        max_tokens: 3500, stream: false
+        max_tokens: 1200, stream: false
       })
     });
 

@@ -11,6 +11,7 @@ import {
   Clock,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import { safeInvoke, isInvokeSuccess } from "../lib/safeInvoke";
 
 interface TopReferrer {
   id: string;
@@ -56,19 +57,12 @@ export default function ReferralAdminPanel() {
     setLoading(true);
     setError(null);
     try {
-      const { data, error: fnErr } = await supabase.functions.invoke("referral-admin");
-      if (fnErr) {
-        let msg = fnErr?.message || String(fnErr);
-        if (fnErr?.context?.text && typeof fnErr.context.text === 'function') {
-          try { msg = await fnErr.context.text(); } catch (_) {}
-        } else if (typeof fnErr?.context?.text === 'string') {
-          msg = fnErr.context.text;
-        }
-        console.error("[ReferralAdminPanel] referral-admin error:", msg);
-        setError(msg);
+      const response = await safeInvoke(supabase, "referral-admin");
+      if (!isInvokeSuccess(response)) {
+        setError(response.error?.message || "Failed to load referral admin stats");
         return;
       }
-      setStats(data);
+      setStats(response.data);
     } finally {
       setLoading(false);
     }

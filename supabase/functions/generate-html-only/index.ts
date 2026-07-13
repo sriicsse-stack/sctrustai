@@ -461,7 +461,7 @@ Deno.serve(async (req) => {
           { role: "system", content: DATA_SYSTEM },
           { role: "user", content: `Generate structured app data for: "${projectName || prompt}" — ${description || prompt}\nReturn ONLY the raw JSON object.` }
         ],
-        max_tokens: 3000, stream: false
+        max_tokens: 1500, stream: false
       })
     });
 

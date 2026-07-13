@@ -256,7 +256,7 @@ Return ONLY the JSON object.`;
       body: JSON.stringify({
         model,
         messages: [{ role: "user", content: promptInstructions }],
-        max_tokens: 800,
+        max_tokens: 600,
         stream: false
       })
     });

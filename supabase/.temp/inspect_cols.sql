@@ -1,0 +1,1 @@
+﻿SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='referrals' ORDER BY ordinal_position; SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='referral_rewards' ORDER BY ordinal_position;

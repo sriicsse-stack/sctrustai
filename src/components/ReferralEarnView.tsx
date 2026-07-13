@@ -19,6 +19,8 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import { buildReferralLink, getReferralBaseOrigin, normalizeReferralLink } from "../lib/referral";
+import { getReferralProfile } from "../lib/referralProfile";
 
 interface ReferralStats {
   total_referrals: number;
@@ -58,8 +60,7 @@ interface ReferralEarnViewProps {
   };
 }
 
-// Use runtime origin or Vite APP_URL when available; avoid hardcoded external domain
-const APP_ORIGIN = (import.meta.env.VITE_APP_URL as string) || (typeof window !== "undefined" ? window.location.origin : "");
+const getAppOrigin = () => getReferralBaseOrigin();
 
 function statusLabel(r: ReferralRecord) {
   if (r.paid_rewarded) return { text: "Paid Plan", color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" };
@@ -79,105 +80,128 @@ export default function ReferralEarnView({ userState }: ReferralEarnViewProps) {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [referrals, setReferrals] = useState<ReferralRecord[]>([]);
   const [stats, setStats] = useState<ReferralStats | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [liveCredits, setLiveCredits] = useState<number>(userState.credits);
   const [newRewardPulse, setNewRewardPulse] = useState(false);
+  const isLoadingReferral = React.useRef(false);
 
   const user = userState.user;
 
-  // Derive referral link from profile (server returns `referral_link`) or compute from code.
-  const referralCode = profile?.referral_code ?? null;
-  const referralLink = profile?.referral_link ?? (referralCode ? `${APP_ORIGIN.replace(/\/$/, "")}/ref/${referralCode}` : null);
+  // Derive referral link from the current frontend origin so the UI never falls back to a Supabase host.
+  const referralLink = profile?.referral_link
+    ? normalizeReferralLink(profile.referral_link)
+    : profile?.referral_code
+      ? buildReferralLink(profile.referral_code, typeof window !== "undefined" ? window.location.origin : getAppOrigin())
+      : null;
 
   // ── Load / upsert profile + dashboard ───────────────────────────────────
   const loadDashboard = useCallback(async () => {
-    if (!user?.googleId) return;
+    if (isLoadingReferral.current) {
+      console.debug('[ReferralEarnView] Skipping duplicate referral load');
+      return;
+    }
+
+    const userId = user?.googleId || user?.id;
+    if (!userId || !user?.email) {
+      setLoading(false);
+      return;
+    }
+
+    isLoadingReferral.current = true;
     setLoading(true);
+    setError(null);
+
     try {
-      // DEBUG: Log environment and client initialization
-      console.log("[ReferralEarnView] SUPABASE URL:", import.meta.env.VITE_SUPABASE_URL);
-      console.log("[ReferralEarnView] ANON KEY EXISTS:", !!import.meta.env.VITE_SUPABASE_ANON_KEY);
-      console.log("[ReferralEarnView] User ID:", user.googleId);
-      console.log("[ReferralEarnView] Invoking referral-profile with fetch_dashboard=true");
-      
-      const { data, error } = await supabase.functions.invoke("referral-profile", {
+      console.log('[ReferralEarnView] Starting referral dashboard load', {
+        userId,
+        email: user.email,
+        supabaseUrl: import.meta.env.VITE_SUPABASE_URL,
+        hasAnonKey: Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY),
+      });
+
+      const response = await getReferralProfile(supabase, {
         body: {
-          user_id: user.googleId,
+          user_id: userId,
           email: user.email,
           name: user.name,
           picture: user.picture,
           fetch_dashboard: true,
         },
       });
-      
-      if (error) {
-        let msg = error?.message || String(error);
-        if (error?.context?.text && typeof error.context.text === 'function') {
-          try { msg = await error.context.text(); } catch (_) {}
-        } else if (typeof error?.context?.text === 'string') {
-          msg = error.context.text;
-        }
-        console.error("[ReferralEarnView] referral-profile error:", msg);
-        console.error("[ReferralEarnView] Full error object:", error);
+
+      const invokeError = response.error;
+      const data = response.data;
+
+      console.log('[ReferralEarnView] referral-profile response', { invokeError, data });
+
+      if (invokeError) {
+        const msg = invokeError.message;
+        console.error('[ReferralEarnView] referral-profile error:', msg);
+        setError(msg);
         return;
       }
-      
-      console.log("[ReferralEarnView] Response data:", data);
+
+      const profileData = data?.dashboard?.profile ?? data?.profile ?? null;
+      if (!profileData) {
+        setError('No referral profile returned from Supabase.');
+        return;
+      }
+
+      const normalizedProfile = {
+        ...profileData,
+        referral_link: normalizeReferralLink(profileData.referral_link) || normalizeReferralLink(profileData.referral_code) || 
+          (profileData.referral_code
+            ? buildReferralLink(profileData.referral_code, typeof window !== "undefined" ? window.location.origin : getAppOrigin())
+            : null),
+      };
+
+      setProfile(normalizedProfile);
+      setLiveCredits(typeof normalizedProfile.credits === 'number' ? normalizedProfile.credits : userState.credits);
+
       if (data?.dashboard) {
-        setProfile(data.dashboard.profile);
         setReferrals(data.dashboard.referrals ?? []);
-        setStats(data.dashboard.stats);
-        setLiveCredits(data.dashboard.profile.credits);
-        // Auto-generate referral if missing using Supabase Edge function instead of Express API
-        if (user && data.dashboard.profile && !data.dashboard.profile.referral_code && !data.dashboard.profile.referral_link) {
-          try {
-            const { data: genData, error: genErr } = await supabase.functions.invoke('referral-profile', {
-              body: {
-                user_id: user.googleId,
-                email: user.email,
-                name: user.name,
-                picture: user.picture,
-                fetch_dashboard: true,
-                auto_create_referral: true,
-              },
-            });
-            if (!genErr && genData) {
-              const prof = genData.dashboard?.profile ?? genData.profile;
-              if (prof) setProfile(prof);
-            }
-          } catch (e) {
-            console.warn('Auto-generate referral via Edge function failed', e);
-          }
-        }
-      } else if (data?.profile) {
-        setProfile(data.profile);
-        setLiveCredits(data.profile.credits);
-        // Auto-generate referral if missing on minimal profile response via Edge function
-        if (user && data.profile && !data.profile.referral_code && !data.profile.referral_link) {
-          try {
-            const { data: genData, error: genErr } = await supabase.functions.invoke('referral-profile', {
-              body: {
-                user_id: user.googleId,
-                email: user.email,
-                name: user.name,
-                picture: user.picture,
-                fetch_dashboard: false,
-                auto_create_referral: true,
-              },
-            });
-            if (!genErr && genData) {
-              const prof = genData.profile ?? genData.dashboard?.profile;
-              if (prof) setProfile(prof);
-            }
-          } catch (e) {
-            console.warn('Auto-generate referral via Edge function failed', e);
-          }
+        setStats(data.dashboard.stats ?? null);
+      }
+
+      if (!normalizedProfile.referral_code && !normalizedProfile.referral_link) {
+        console.log('[ReferralEarnView] Missing referral code, auto-creating one');
+        const genResponse = await getReferralProfile(supabase, {
+          body: {
+            user_id: userId,
+            email: user.email,
+            name: user.name,
+            picture: user.picture,
+            fetch_dashboard: true,
+            auto_create_referral: true,
+          },
+        });
+
+        const genErr = genResponse.error;
+        const genData = genResponse.data;
+
+        if (!genErr && (genData?.dashboard?.profile || genData?.profile)) {
+          const refreshedProfile = (genData.dashboard?.profile ?? genData.profile) as ProfileData;
+          setProfile({
+            ...refreshedProfile,
+            referral_link: normalizeReferralLink(refreshedProfile.referral_link) || normalizeReferralLink(refreshedProfile.referral_code) ||
+              (refreshedProfile.referral_code
+                ? buildReferralLink(refreshedProfile.referral_code, typeof window !== "undefined" ? window.location.origin : getAppOrigin())
+                : undefined),
+          });
+        } else {
+          console.error('[ReferralEarnView] Auto-create referral failed:', genErr);
+          setError(genErr?.message || 'Unable to generate referral link.');
         }
       }
+    } catch (e) {
+      console.error('[ReferralEarnView] loadDashboard exception:', e);
+      setError(e instanceof Error ? e.message : 'Unable to load referral data.');
     } finally {
+      isLoadingReferral.current = false;
       setLoading(false);
     }
-  }, [user]);
+  }, [user, userState.credits]);
 
   useEffect(() => { loadDashboard(); }, [loadDashboard]);
 
@@ -336,7 +360,7 @@ export default function ReferralEarnView({ userState }: ReferralEarnViewProps) {
                 <div className={`flex-1 min-w-0 border p-3 rounded-xl font-mono text-[11.5px] truncate select-all transition-colors ${
                   referralLink ? "bg-slate-950 border-slate-800 text-blue-400" : "bg-slate-950/50 border-slate-800/50 text-slate-600"
                 }`}>
-                  {referralLink ?? (user ? "Generating referral..." : "Sign in to get your link")}
+                  {loading ? 'Generating referral...' : referralLink ?? (user ? 'Referral link unavailable' : 'Sign in to get your link')}
                 </div>
                 <button
                   onClick={handleCopy}
@@ -351,6 +375,12 @@ export default function ReferralEarnView({ userState }: ReferralEarnViewProps) {
                 </button>
               </div>
             </div>
+
+            {error && (
+              <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-300">
+                {error}
+              </div>
+            )}
 
             {/* Share buttons */}
             {referralLink && profile && (

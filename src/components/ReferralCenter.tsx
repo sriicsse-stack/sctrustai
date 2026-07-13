@@ -1,58 +1,88 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { motion } from "framer-motion";
 import { supabase } from "../lib/supabaseClient";
+import { buildReferralLink, normalizeReferralLink } from "../lib/referral";
+import { getReferralProfile } from "../lib/referralProfile";
 
 export default function ReferralCenter() {
   const [referral, setReferral] = useState<any>(null);
   const [copied, setCopied] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
+  const isLoadingReferral = useRef(false);
+
+  const referralLink = referral?.referral_link ? normalizeReferralLink(referral.referral_link) : (referral?.referral_code ? buildReferralLink(referral.referral_code) : "");
 
   useEffect(() => {
-    // Use Supabase Edge function to fetch profile + dashboard (creates referral if missing)
     (async () => {
       try {
         let user = null;
         try {
           const { data: userData } = await supabase.auth.getUser();
           if (userData?.user) {
-            user = { googleId: userData.user.id, email: userData.user.email, name: (userData.user.user_metadata as any)?.full_name, picture: (userData.user.user_metadata as any)?.avatar_url };
+            user = {
+              googleId: userData.user.id,
+              email: userData.user.email,
+              name: (userData.user.user_metadata as any)?.full_name || (userData.user.user_metadata as any)?.name,
+              picture: (userData.user.user_metadata as any)?.avatar_url || (userData.user.user_metadata as any)?.picture,
+            };
           }
         } catch (_) {}
         if (!user) {
           try { const s = await (await fetch('/api/user-state')).json(); user = s.user; } catch (_) { user = null; }
         }
         if (!user) return;
-        const { data, error } = await supabase.functions.invoke('referral-profile', {
-          body: { user_id: user.googleId, email: user.email, name: user.name, picture: user.picture, fetch_dashboard: true }
-        });
-        if (!error && data) {
-          const ref = data.dashboard?.profile ?? data.profile;
-          if (ref) setReferral(ref);
-          if (data.dashboard?.referrals) setHistory(data.dashboard.referrals);
+
+        if (isLoadingReferral.current) return;
+        isLoadingReferral.current = true;
+
+        try {
+          const response = await getReferralProfile(supabase, {
+            body: { user_id: user.googleId, email: user.email, name: user.name, picture: user.picture, fetch_dashboard: true }
+          });
+
+          console.log('[ReferralCenter] referral-profile response', { error: response.error, data: response.data });
+          if (!response.error && response.data) {
+            const ref = response.data.dashboard?.profile ?? response.data.profile;
+            if (ref) {
+              const normalized = {
+                ...ref,
+                referral_link: normalizeReferralLink(ref.referral_link) || normalizeReferralLink(ref.referral_code) || (ref.referral_code ? buildReferralLink(ref.referral_code) : ''),
+              };
+              setReferral(normalized);
+            }
+            if (response.data.dashboard?.referrals) setHistory(response.data.dashboard.referrals);
+          }
+        } finally {
+          isLoadingReferral.current = false;
         }
       } catch (e) {
-        // ignore
+        console.error('[ReferralCenter] load referral exception:', e);
       }
     })();
   }, []);
 
   const onGenerate = async () => {
     try {
-      const user = (await (await fetch('/api/user-state')).json()).user;
+      const userResponse = await (await fetch('/api/user-state')).json();
+      const user = userResponse?.user;
       if (!user) return;
-      console.log("[ReferralCenter] Generating referral for:", user.googleId);
-      const { data, error } = await supabase.functions.invoke('referral-profile', {
+      console.log('[ReferralCenter] Generating referral for:', user.googleId);
+      const response = await getReferralProfile(supabase, {
         body: { user_id: user.googleId, email: user.email, name: user.name, picture: user.picture, fetch_dashboard: false, auto_create_referral: true }
       });
-      if (error) {
-        console.error("[ReferralCenter] Referral generation error:", error);
+      if (response.error) {
+        console.error('[ReferralCenter] Referral generation error:', response.error);
         return;
       }
-      if (data) {
-        const prof = data.profile ?? data.dashboard?.profile;
+      if (response.data) {
+        const prof = response.data.profile ?? response.data.dashboard?.profile;
         if (prof) {
-          console.log("[ReferralCenter] Generated referral:", prof);
-          setReferral(prof);
+          const normalized = {
+            ...prof,
+            referral_link: normalizeReferralLink(prof.referral_link) || normalizeReferralLink(prof.referral_code) || (prof.referral_code ? buildReferralLink(prof.referral_code) : ''),
+          };
+          console.log('[ReferralCenter] Generated referral:', normalized);
+          setReferral(normalized);
         }
       }
     } catch (e) {
@@ -83,15 +113,15 @@ export default function ReferralCenter() {
         <div>
           <div className="mb-2">Your referral link:</div>
           <div className="flex items-center gap-2">
-            <input readOnly value={referral.referral_link} className="flex-1 p-2 rounded bg-white/5" />
-            <button onClick={() => onCopy(referral.referral_link)} className="btn">{copied ? "Copied" : "Copy"}</button>
+            <input readOnly value={referralLink} className="flex-1 p-2 rounded bg-white/5" />
+            <button onClick={() => onCopy(referralLink)} className="btn">{copied ? "Copied" : "Copy"}</button>
           </div>
 
           <div className="mt-3 flex gap-2">
-            <button onClick={() => shareWhatsApp(referral.referral_link)} className="btn">WhatsApp</button>
-            <button onClick={() => shareTelegram(referral.referral_link)} className="btn">Telegram</button>
-            <button onClick={() => shareEmail(referral.referral_link)} className="btn">Email</button>
-            <button onClick={() => onNativeShare(referral.referral_link)} className="btn">Share</button>
+            <button onClick={() => shareWhatsApp(referralLink)} className="btn">WhatsApp</button>
+            <button onClick={() => shareTelegram(referralLink)} className="btn">Telegram</button>
+            <button onClick={() => shareEmail(referralLink)} className="btn">Email</button>
+            <button onClick={() => onNativeShare(referralLink)} className="btn">Share</button>
           </div>
 
           <div className="mt-4">

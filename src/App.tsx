@@ -60,10 +60,14 @@ import PricingPage from "./components/PricingPage";
 import AIWorkspaceLayout from "./components/workspace/AIWorkspaceLayout";
 import MarketplacePage from "./components/MarketplacePage";
 import DashboardPage from "./components/DashboardPage";
+import ReferralLanding from "./components/ReferralLanding";
 import { ProjectDetails, ProjectSummary } from "./types";
 import CreditConfirmModal from "./components/workspace/CreditConfirmModal";
 import { estimateCreditCost, type CreditEstimate } from "./lib/creditCost";
 import { readJsonResponse } from "./lib/apiResponse";
+import { buildReferralLink } from "./lib/referral";
+import { safeInvoke, isInvokeSuccess } from "./lib/safeInvoke";
+import { getReferralProfile } from "./lib/referralProfile";
 
 // Custom fetch helper: sanitizes header values to printable ASCII (avoids Android
 // WebView "not a valid ByteString" TypeError) and injects auth headers for /api calls.
@@ -235,6 +239,7 @@ export default function App() {
   const [billingOpen, setBillingOpen] = useState(false);
   const [referralCopied, setReferralCopied] = useState(false);
   const [marketplaceApps, setMarketplaceApps] = useState<any[]>([]);
+  const [supabaseWarning, setSupabaseWarning] = useState<string | null>(null);
   const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
   const [dashboardStats, setDashboardStats] = useState({
     totalViews: 0,
@@ -557,17 +562,18 @@ export default function App() {
   }, [userState.user?.email, userState.offerSignupTime, userState.offerPopupShown, userState.offerRedeemed]);
 
   // ── Capture referral code from URL path /ref/:code or ?ref=code ────────
-  useEffect(() => {
+  const referralCodeFromUrl = (() => {
+    if (typeof window === "undefined") return "";
     const path = window.location.pathname;
     const refMatch = path.match(/\/ref\/([A-Za-z0-9_-]+)/);
     const urlParams = new URLSearchParams(window.location.search);
-    const refCode = refMatch?.[1] || urlParams.get("ref");
-    if (refCode) {
-      localStorage.setItem("pending_referral_code", refCode.toUpperCase());
-      // Clean up URL without reload
-      window.history.replaceState({}, "", "/");
-    }
-  }, []);
+    return refMatch?.[1] || urlParams.get("ref") || "";
+  })();
+
+  useEffect(() => {
+    if (!referralCodeFromUrl) return;
+    localStorage.setItem("pending_referral_code", referralCodeFromUrl.toUpperCase());
+  }, [referralCodeFromUrl]);
 
   // ── Upsert profile + process pending referral after Google login ─────────
   async function handlePostLoginReferral(user: { googleId: string; email: string; name: string; picture: string; expiresAt?: string }) {
@@ -575,7 +581,7 @@ export default function App() {
     try {
       let result: any = null;
       if (pendingCode) {
-        const { data, error } = await supabase.functions.invoke("referral-signup", {
+        const response = await safeInvoke(supabase, "referral-signup", {
           body: {
             referrer_code: pendingCode,
             new_user_id: user.googleId,
@@ -584,15 +590,18 @@ export default function App() {
             new_user_picture: user.picture,
           },
         });
-        if (!error && data?.referral?.success) {
-          localStorage.removeItem("pending_referral_code");
-          showToast("🎉 Referral bonus applied! +10 credits added to your account.", "success");
+        if (isInvokeSuccess(response)) {
+          if (response.data?.applied_referral || response.data?.referral?.success) {
+            localStorage.removeItem("pending_referral_code");
+            showToast("🎉 Referral bonus applied! +10 credits added to your account.", "success");
+          }
+          result = response.data;
         } else {
+          console.error("referral-signup failed:", response.error?.message);
           localStorage.removeItem("pending_referral_code");
         }
-        result = data;
       } else {
-        const { data, error } = await supabase.functions.invoke("referral-profile", {
+        const response = await getReferralProfile(supabase, {
           body: {
             user_id: user.googleId,
             email: user.email,
@@ -601,10 +610,11 @@ export default function App() {
             fetch_dashboard: false,
           },
         });
-        if (error) {
-          console.error("referral-profile error:", error);
+        if (isInvokeSuccess(response)) {
+          result = response.data;
+        } else {
+          console.error("referral-profile error:", response.error?.message);
         }
-        result = data;
       }
 
       const profile = result?.profile;
@@ -626,6 +636,8 @@ export default function App() {
       return null;
     }
   }
+
+  const isReferralLandingRoute = typeof window !== "undefined" && window.location.pathname.startsWith("/ref/");
 
   // Load project index list and user credits on mount
   useEffect(() => {
@@ -677,7 +689,17 @@ export default function App() {
   const fetchProjects = async () => {
     try {
       const { data, error } = await supabase.from("projects").select("*").order("created_at", { ascending: false });
-      if (error) throw error;
+      if (error) {
+        console.error("Failed to load projects from Supabase:", error);
+        const message = error.message || "Unable to load projects.";
+        if (/PGRST205|42P01|relation .* does not exist|missing the table/i.test(message)) {
+          setSupabaseWarning("Supabase schema is unavailable or the projects table is missing. Project history is shown from local cache only.");
+          showToast("Supabase schema unavailable. Using local fallback and preserving session data.", "info");
+        }
+        setProjectsList([]);
+        return;
+      }
+
       if (data) {
         const normalized = data.map((p: any) => ({
           id: p.id,
@@ -696,15 +718,33 @@ export default function App() {
         }));
         setProjectsList(normalized);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to load projects from Supabase:", e);
+      const message = e?.message || "Unable to load projects.";
+      if (/PGRST205|42P01|relation .* does not exist|missing the table/i.test(message)) {
+        setSupabaseWarning("Supabase schema is unavailable or the projects table is missing. Project history is shown from local cache only.");
+        showToast("Supabase schema unavailable. Using local fallback and preserving session data.", "info");
+      }
+      setProjectsList([]);
     }
   };
 
   const fetchMarketplaceApps = async () => {
     try {
-      const { data, error } = await supabase.from("marketplace_apps").select("*, profiles(name, avatar_url)").order("created_at", { ascending: false });
-      if (error) throw error;
+      // Temporary: avoid selecting related `profiles` object until DB schema relationship is fixed
+      // Replaced: .select("*, profiles(name, avatar_url)") --> .select("*")
+      const { data, error } = await supabase.from("marketplace_apps").select("*").order("created_at", { ascending: false });
+      if (error) {
+        console.error("Failed to load marketplace:", error);
+        const message = error.message || "Unable to load marketplace apps.";
+        if (/PGRST205|42P01|relation .* does not exist|missing the table/i.test(message)) {
+          setSupabaseWarning("Supabase schema is unavailable or the marketplace_apps table is missing. Marketplace view is disabled.");
+          showToast("Marketplace is temporarily unavailable due to Supabase schema issues.", "info");
+        }
+        setMarketplaceApps([]);
+        return;
+      }
+
       if (data) {
         setMarketplaceApps(data.map((app: any) => ({
           id: app.id,
@@ -720,8 +760,14 @@ export default function App() {
           prompt: app.prompt
         })));
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to load marketplace:", e);
+      const message = e?.message || "Unable to load marketplace apps.";
+      if (/PGRST205|42P01|relation .* does not exist|missing the table/i.test(message)) {
+        setSupabaseWarning("Supabase schema is unavailable or the marketplace_apps table is missing. Marketplace view is disabled.");
+        showToast("Marketplace is temporarily unavailable due to Supabase schema issues.", "info");
+      }
+      setMarketplaceApps([]);
     }
   };
 
@@ -1062,23 +1108,21 @@ export default function App() {
       }
     }, 1200);
 
-    const GENERATE_URL = "https://zgglpeyyzozwxnkdliqh.supabase.co/functions/v1/generate";
-    const SUPABASE_ANON_G = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpnZ2xwZXl5em96d3hua2RsaXFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2NjM1ODAsImV4cCI6MjA5ODIzOTU4MH0.07utLUydxZAiH5rrLi5uW5tg6kHYYypbcJvFRKdYLrM";
+    const GENERATE_URL = "/api/generate";
     try {
       const res = await fetch(GENERATE_URL, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${SUPABASE_ANON_G}`,
-          "apikey": SUPABASE_ANON_G
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({ prompt: promptToGen, size: selectedSize })
       });
       const data = await res.json();
       clearInterval(initialInterval);
 
-      if (data.error) {
-        showToast(data.error, "error");
+      if (data.error || data.success === false) {
+        const message = data.error || "Generation failed. Please try again.";
+        showToast(message, "error");
         setIsGenerating(false);
         await fetchUserState();
         return;
@@ -2123,11 +2167,11 @@ export default function App() {
   };
 
   // Switch custom file context directly from Code Explorer "Analyze in Sri AI" button
-  const handleAnalyzeFileInSriAI = (filePath: string, content: string) => {
+  const handleAnalyzeFileInSriAI = (filePath: string, content?: string) => {
     setActiveGlobalTab("sri-ai");
     setUploadedFileType("text");
     setUploadedFileName(filePath);
-    setCustomFileContent(content);
+    setCustomFileContent(content ?? "");
     setSriInput(`Analyze this specific file code: "${filePath}"`);
   };
 
@@ -2187,14 +2231,11 @@ export default function App() {
         // Step 4: Call generation Edge Function
         setVoiceAppPipeline(prev => prev ? { ...prev, step: 4 } : null);
         addVoiceLog("AI Request Sent", "info");
-        const GENERATE_URL_V = "https://zgglpeyyzozwxnkdliqh.supabase.co/functions/v1/generate";
-        const SUPABASE_ANON_GV = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpnZ2xwZXl5em96d3hua2RsaXFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2NjM1ODAsImV4cCI6MjA5ODIzOTU4MH0.07utLUydxZAiH5rrLi5uW5tg6kHYYypbcJvFRKdYLrM";
+        const GENERATE_URL_V = "/api/generate";
         const genRes = await fetch(GENERATE_URL_V, {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${SUPABASE_ANON_GV}`,
-            "apikey": SUPABASE_ANON_GV
+            "Content-Type": "application/json"
           },
           body: JSON.stringify({ prompt: specData?.prompt || text })
         });
@@ -2436,6 +2477,10 @@ export default function App() {
     "Validating secure sandbox safety requirements...",
     "Assembling live project files and launching build sandbox..."
   ];
+
+  if (isReferralLandingRoute) {
+    return <ReferralLanding code={referralCodeFromUrl} />;
+  }
 
   return (
     <div id="website-builder-workspace" className="min-h-screen w-full max-w-full overflow-x-hidden bg-[#070708] text-slate-300 flex flex-col font-sans select-none selection:bg-blue-600/35">

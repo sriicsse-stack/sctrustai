@@ -209,6 +209,7 @@ Keep all existing functionality — only fix violations, do not remove features.
 Return ONLY the complete fixed HTML. Start with <!DOCTYPE html>. No markdown fences.`;
 
   try {
+    console.log("[v3-generate] V2 AutoFix max_tokens=1800");
     const fixRes = await fetch(OPENROUTER_API_URL, {
       method: "POST",
       headers: {
@@ -223,7 +224,7 @@ Return ONLY the complete fixed HTML. Start with <!DOCTYPE html>. No markdown fen
           { role: "system", content: "You are an expert HTML fixer. Return ONLY the complete fixed HTML file. No explanations. No markdown fences." },
           { role: "user", content: fixPrompt + "\n\nHTML TO FIX:\n" + html.substring(0, 12000) }
         ],
-        max_tokens: 6000,
+        max_tokens: 1800,
         stream: false
       })
     });
@@ -4210,7 +4211,7 @@ REQUIREMENTS:
             { role: "system", content: gameSystemPrompt },
             { role: "user", content: gameUserMsg }
           ],
-          max_tokens: 8000,
+          max_tokens: 2000,
           stream: false
         })
       });
@@ -4260,7 +4261,8 @@ REQUIREMENTS:
     // Phase 3 — Quality validation
     // Phase 4 — Auto-Fix Engine (second pass if issues found)
     // ─────────────────────────────────────────────────────────────────────────
-    const maxTokens = size === "Large" ? 6000 : size === "Small" ? 4000 : 5000;
+    // Safe token limits: 1500-2000 for generation (free tier can afford ~4070 tokens)
+    const maxTokens = size === "Large" ? 1800 : size === "Small" ? 1500 : 1600;
 
     // ── Image context for multi-modal prompts ─────────────────────────────────
     const imageHint = images && Array.isArray(images) && images.length > 0
@@ -4328,6 +4330,7 @@ CONSTRAINTS:
 - Every button and form must perform a real action`;
 
     console.log(`[v3-generate] prompt="${prompt.substring(0, 60)}..." type=${appType}`);
+    console.log(`[v3-generate] main request max_tokens=${maxTokens}`);
 
     const res = await fetch(OPENROUTER_API_URL, {
       method: "POST",
@@ -4346,6 +4349,33 @@ CONSTRAINTS:
         max_tokens: maxTokens,
         stream: false
       })
+    }).then(async (response) => {
+      // Retry with lower tokens if limit error
+      if (!response.ok) {
+        const text = await response.text();
+        if (text.includes("can only afford") || text.includes("max_tokens")) {
+          console.warn(`[v3-generate] Token limit at ${maxTokens}, retrying with 1000...`);
+          return fetch(OPENROUTER_API_URL, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+              "HTTP-Referer": "https://medo.dev",
+              "X-Title": "V3 TrustMe Functional"
+            },
+            body: JSON.stringify({
+              model,
+              messages: [
+                { role: "system", content: FUNCTIONAL_APP_SYSTEM_PROMPT },
+                { role: "user", content: userContent }
+              ],
+              max_tokens: 1000,
+              stream: false
+            })
+          });
+        }
+      }
+      return response;
     });
 
     const resText = await res.text();
@@ -4353,7 +4383,13 @@ CONSTRAINTS:
 
     if (!res.ok) {
       const errMsg = (() => { try { return JSON.parse(resText).error?.message; } catch { return null; } })() || `HTTP ${res.status}`;
-      return new Response(JSON.stringify({ error: `AI generation failed: ${errMsg}` }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      const friendlyMsg = errMsg?.includes("can only afford") 
+        ? "Generation request too large. Please simplify your prompt or try a smaller size." 
+        : errMsg?.includes("429") 
+        ? "Too many requests. Please wait a moment and try again." 
+        : "AI generation failed. Please try again.";
+      console.error(`[v3-generate] Error: ${errMsg}`);
+      return new Response(JSON.stringify({ error: friendlyMsg }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     const result = JSON.parse(resText);
@@ -4377,10 +4413,11 @@ CONSTRAINTS:
       usedFallback = true;
       const fallbackSystemPrompt = getSystemPrompt(appType) + V2_QUALITY_SUFFIX;
       const fallbackContent = `[FALLBACK V2] User Request: "${prompt}". App type: ${appType}. Return ONLY the raw JSON object — no markdown, no explanation.`;
+      console.log("[v3-generate] V2 Fallback max_tokens=1800");
       const fallbackRes = await fetch(OPENROUTER_API_URL, {
         method: "POST",
         headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json", "HTTP-Referer": "https://medo.dev", "X-Title": "V2 Fallback" },
-        body: JSON.stringify({ model, messages: [{ role: "system", content: fallbackSystemPrompt }, { role: "user", content: fallbackContent }], max_tokens: 3000, stream: false })
+        body: JSON.stringify({ model, messages: [{ role: "system", content: fallbackSystemPrompt }, { role: "user", content: fallbackContent }], max_tokens: 1800, stream: false })
       });
       const fallbackText = await fallbackRes.text();
       const fallbackResult = JSON.parse(fallbackText);

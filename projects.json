@@ -110,5 +110,203 @@
     "deploymentUrl": "https://sctrustai-buldtge3v-sri-s-projectscs.vercel.app",
     "deployedAt": "2026-07-04T14:56:32.651Z",
     "name": "TrustMeAI Builder"
+  },
+  {
+    "id": "proj_pyf80gm",
+    "prompt": "test app",
+    "files": [
+      {
+        "path": "previewHtml.html",
+        "code": "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><title>Interactive Preview</title><link rel='stylesheet' href='styles.css'><script src='main.js'></script></head><body><div id='container'><header>Preivew App</header><main><section id='content'><h1>Welcome!</h1><p>This is a responsive, interactive preview.<button id='action'>Click Me</button></p></section></main><footer>2023</footer></div><script>document.getElementById('action').addEventListener('click', () => alert('Interactive!'));</script></body></html>"
+      },
+      {
+        "path": "styles.css",
+        "code": "body { font-family: Arial; max-width: 1000px; margin: 0 auto; padding: 20px; }#container { display: flex; flex-direction: column; height: 100vh; }header, footer { background: #f0f0f0; padding: 10px; border-radius: 5px; }main { flex-grow: 1; }button { padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; }"
+      },
+      {
+        "path": "main.js",
+        "code": "document.addEventListener('DOMContentLoaded', () => {fetch('/api/data').then(res => res.json()).then(data => {document.getElementById('content').innerHTML += `<p>Data: ${JSON.stringify(data)}</p>`});});"
+      },
+      {
+        "path": "server.js",
+        "code": "const express = require('express');\nconst app = express();\nconst port = process.env.PORT || 3000;\napp.use(express.static('.'));\napp.get('/api/data', (req, res) => {\n  res.json({ message: 'Mock API data' });\n});\napp.listen(port, () => console.log(`Server running on port ${port}`));"
+      },
+      {
+        "path": "package.json",
+        "dependencies": {
+          "express": "^4.18.2"
+        }
+      }
+    ],
+    "autoDiagnosticReport": {
+      "status": "repaired",
+      "errorsFound": [
+        "The primary preview viewport HTML content is empty or unpopulated.",
+        "Compilation Error: Workspace file [previewHtml.html] is blank or has no program definitions.",
+        "Compilation Error: Workspace file [styles.css] is blank or has no program definitions.",
+        "Compilation Error: Workspace file [main.js] is blank or has no program definitions.",
+        "Compilation Error: Workspace file [server.js] is blank or has no program definitions.",
+        "Compilation Error: Workspace file [package.json] is blank or has no program definitions."
+      ],
+      "autoFixesApplied": [
+        "Auto-repaired: The primary preview viewport HTML content is empty or unpopulated.",
+        "Auto-repaired: Unresolved Architecture: Zero database or server code files are present in the compiled code workspace directory."
+      ],
+      "validationSpecs": {
+        "build": "passed",
+        "router": "passed",
+        "assets": "passed",
+        "responsive": "passed",
+        "consoleCheck": "0 errors, self-healing loop successfully verified compiled tree"
+      }
+    },
+    "createdAt": "2026-07-09T16:19:35.267Z",
+    "deployments": []
+  },
+  {
+    "id": "proj_6t5faj4",
+    "prompt": "Create a simple responsive landing page with navbar, hero section, features section and contact form.",
+    "files": [],
+    "previewHtml": "",
+    "autoDiagnosticReport": {
+      "status": "repaired",
+      "errorsFound": [
+        "The primary preview viewport HTML content is empty or unpopulated.",
+        "Unresolved Architecture: Zero database or server code files are present in the compiled code workspace directory."
+      ],
+      "autoFixesApplied": [],
+      "validationSpecs": {
+        "build": "failed",
+        "router": "passed",
+        "assets": "passed",
+        "responsive": "passed",
+        "consoleCheck": "Compiling corrections applied"
+      }
+    },
+    "createdAt": "2026-07-13T12:44:31.923Z",
+    "deployments": []
+  },
+  {
+    "id": "proj_m3m2vh6",
+    "prompt": "Create a simple responsive landing page with navbar, hero section, features section and contact form.",
+    "files": [],
+    "previewHtml": "",
+    "autoDiagnosticReport": {
+      "status": "repaired",
+      "errorsFound": [
+        "The primary preview viewport HTML content is empty or unpopulated.",
+        "Unresolved Architecture: Zero database or server code files are present in the compiled code workspace directory."
+      ],
+      "autoFixesApplied": [],
+      "validationSpecs": {
+        "build": "failed",
+        "router": "passed",
+        "assets": "passed",
+        "responsive": "passed",
+        "consoleCheck": "Compiling corrections applied"
+      }
+    },
+    "createdAt": "2026-07-13T12:47:24.678Z",
+    "deployments": []
+  },
+  {
+    "id": "proj_qu2esmi",
+    "name": "Generated App",
+    "description": "",
+    "prompt": "Create a simple responsive landing page with a hero section and features list",
+    "files": [],
+    "previewHtml": "",
+    "autoDiagnosticReport": {
+      "status": "repaired",
+      "errorsFound": [
+        "The primary preview viewport HTML content is empty or unpopulated.",
+        "Unresolved Architecture: Zero database or server code files are present in the compiled code workspace directory."
+      ],
+      "autoFixesApplied": [],
+      "validationSpecs": {
+        "build": "failed",
+        "router": "passed",
+        "assets": "passed",
+        "responsive": "passed",
+        "consoleCheck": "Compiling corrections applied"
+      }
+    },
+    "createdAt": "2026-07-13T13:17:34.735Z",
+    "deployments": []
+  },
+  {
+    "id": "proj_9io0uhe",
+    "name": "Generated App",
+    "description": "",
+    "prompt": "Create a modern responsive landing page with hero section",
+    "files": [],
+    "previewHtml": "",
+    "autoDiagnosticReport": {
+      "status": "repaired",
+      "errorsFound": [
+        "The primary preview viewport HTML content is empty or unpopulated.",
+        "Unresolved Architecture: Zero database or server code files are present in the compiled code workspace directory."
+      ],
+      "autoFixesApplied": [],
+      "validationSpecs": {
+        "build": "failed",
+        "router": "passed",
+        "assets": "passed",
+        "responsive": "passed",
+        "consoleCheck": "Compiling corrections applied"
+      }
+    },
+    "createdAt": "2026-07-13T15:38:51.099Z",
+    "deployments": []
+  },
+  {
+    "id": "proj_cmsdyn5",
+    "name": "Generated App",
+    "description": "",
+    "prompt": "Create a modern responsive landing page with hero section",
+    "files": [],
+    "previewHtml": "",
+    "autoDiagnosticReport": {
+      "status": "repaired",
+      "errorsFound": [
+        "The primary preview viewport HTML content is empty or unpopulated.",
+        "Unresolved Architecture: Zero database or server code files are present in the compiled code workspace directory."
+      ],
+      "autoFixesApplied": [],
+      "validationSpecs": {
+        "build": "failed",
+        "router": "passed",
+        "assets": "passed",
+        "responsive": "passed",
+        "consoleCheck": "Compiling corrections applied"
+      }
+    },
+    "createdAt": "2026-07-13T15:51:42.526Z",
+    "deployments": []
+  },
+  {
+    "id": "proj_jv2ly14",
+    "name": "Generated App",
+    "description": "",
+    "prompt": "Create a simple todo app",
+    "files": [],
+    "previewHtml": "",
+    "autoDiagnosticReport": {
+      "status": "repaired",
+      "errorsFound": [
+        "The primary preview viewport HTML content is empty or unpopulated.",
+        "Unresolved Architecture: Zero database or server code files are present in the compiled code workspace directory."
+      ],
+      "autoFixesApplied": [],
+      "validationSpecs": {
+        "build": "failed",
+        "router": "passed",
+        "assets": "passed",
+        "responsive": "passed",
+        "consoleCheck": "Compiling corrections applied"
+      }
+    },
+    "createdAt": "2026-07-13T17:06:50.819Z",
+    "deployments": []
   }
 ]
